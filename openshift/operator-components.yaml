@@ -938,6 +938,12 @@ spec:
                             of the container arg `--sync-period` if both are defined.
                             The same holds for `ManagerSpec.FeatureGates` and `--feature-gates`.
                           type: object
+                        command:
+                          description: Command allows override container's entrypoint
+                            array.
+                          items:
+                            type: string
+                          type: array
                         env:
                           description: List of environment variables to set in the
                             container.
@@ -1257,11 +1263,6 @@ spec:
                           of version) would be `ReplicaSet.apps`."
                         type: object
                     type: object
-                  debug:
-                    default: false
-                    description: Debug, if set, will override a set of fields with
-                      opinionated values for a debugging session. (Verbosity=5, ProfilerAddress=localhost:6060)
-                    type: boolean
                   featureGates:
                     additionalProperties:
                       type: boolean
@@ -1344,9 +1345,8 @@ spec:
                     - retryPeriod
                     type: object
                   maxConcurrentReconciles:
-                    default: 10
                     description: MaxConcurrentReconciles is the maximum number of
-                      concurrent Reconciles which can be run. Defaults to 10.
+                      concurrent Reconciles which can be run.
                     minimum: 1
                     type: integer
                   metrics:
@@ -1411,6 +1411,8 @@ spec:
               version:
                 description: Version indicates the provider version.
                 type: string
+            required:
+            - version
             type: object
           status:
             description: BootstrapProviderStatus defines the observed state of BootstrapProvider.
@@ -2419,6 +2421,12 @@ spec:
                             of the container arg `--sync-period` if both are defined.
                             The same holds for `ManagerSpec.FeatureGates` and `--feature-gates`.
                           type: object
+                        command:
+                          description: Command allows override container's entrypoint
+                            array.
+                          items:
+                            type: string
+                          type: array
                         env:
                           description: List of environment variables to set in the
                             container.
@@ -2738,11 +2746,6 @@ spec:
                           of version) would be `ReplicaSet.apps`."
                         type: object
                     type: object
-                  debug:
-                    default: false
-                    description: Debug, if set, will override a set of fields with
-                      opinionated values for a debugging session. (Verbosity=5, ProfilerAddress=localhost:6060)
-                    type: boolean
                   featureGates:
                     additionalProperties:
                       type: boolean
@@ -2825,9 +2828,8 @@ spec:
                     - retryPeriod
                     type: object
                   maxConcurrentReconciles:
-                    default: 10
                     description: MaxConcurrentReconciles is the maximum number of
-                      concurrent Reconciles which can be run. Defaults to 10.
+                      concurrent Reconciles which can be run.
                     minimum: 1
                     type: integer
                   metrics:
@@ -2892,6 +2894,8 @@ spec:
               version:
                 description: Version indicates the provider version.
                 type: string
+            required:
+            - version
             type: object
           status:
             description: ControlPlaneProviderStatus defines the observed state of
@@ -3900,6 +3904,12 @@ spec:
                             of the container arg `--sync-period` if both are defined.
                             The same holds for `ManagerSpec.FeatureGates` and `--feature-gates`.
                           type: object
+                        command:
+                          description: Command allows override container's entrypoint
+                            array.
+                          items:
+                            type: string
+                          type: array
                         env:
                           description: List of environment variables to set in the
                             container.
@@ -4219,11 +4229,6 @@ spec:
                           of version) would be `ReplicaSet.apps`."
                         type: object
                     type: object
-                  debug:
-                    default: false
-                    description: Debug, if set, will override a set of fields with
-                      opinionated values for a debugging session. (Verbosity=5, ProfilerAddress=localhost:6060)
-                    type: boolean
                   featureGates:
                     additionalProperties:
                       type: boolean
@@ -4306,9 +4311,8 @@ spec:
                     - retryPeriod
                     type: object
                   maxConcurrentReconciles:
-                    default: 10
                     description: MaxConcurrentReconciles is the maximum number of
-                      concurrent Reconciles which can be run. Defaults to 10.
+                      concurrent Reconciles which can be run.
                     minimum: 1
                     type: integer
                   metrics:
@@ -4373,6 +4377,8 @@ spec:
               version:
                 description: Version indicates the provider version.
                 type: string
+            required:
+            - version
             type: object
           status:
             description: CoreProviderStatus defines the observed state of CoreProvider.
@@ -5381,6 +5387,12 @@ spec:
                             of the container arg `--sync-period` if both are defined.
                             The same holds for `ManagerSpec.FeatureGates` and `--feature-gates`.
                           type: object
+                        command:
+                          description: Command allows override container's entrypoint
+                            array.
+                          items:
+                            type: string
+                          type: array
                         env:
                           description: List of environment variables to set in the
                             container.
@@ -5700,11 +5712,6 @@ spec:
                           of version) would be `ReplicaSet.apps`."
                         type: object
                     type: object
-                  debug:
-                    default: false
-                    description: Debug, if set, will override a set of fields with
-                      opinionated values for a debugging session. (Verbosity=5, ProfilerAddress=localhost:6060)
-                    type: boolean
                   featureGates:
                     additionalProperties:
                       type: boolean
@@ -5787,9 +5794,8 @@ spec:
                     - retryPeriod
                     type: object
                   maxConcurrentReconciles:
-                    default: 10
                     description: MaxConcurrentReconciles is the maximum number of
-                      concurrent Reconciles which can be run. Defaults to 10.
+                      concurrent Reconciles which can be run.
                     minimum: 1
                     type: integer
                   metrics:
@@ -5854,6 +5860,8 @@ spec:
               version:
                 description: Version indicates the provider version.
                 type: string
+            required:
+            - version
             type: object
           status:
             description: InfrastructureProviderStatus defines the observed state of
@@ -6109,6 +6117,21 @@ spec:
     spec:
       containers:
       - args:
+        - --metrics-bind-addr=127.0.0.1:8080
+        - --leader-elect
+        command:
+        - /manager
+        image: gcr.io/k8s-staging-cluster-api/cluster-api-operator-amd64:dev
+        imagePullPolicy: IfNotPresent
+        name: manager
+        resources:
+          limits:
+            cpu: 100m
+            memory: 150Mi
+          requests:
+            cpu: 100m
+            memory: 100Mi
+      - args:
         - --secure-listen-address=0.0.0.0:8443
         - --upstream=http://127.0.0.1:8080/
         - --logtostderr=true
@@ -6118,20 +6141,6 @@ spec:
         ports:
         - containerPort: 8443
           name: https
-      - args:
-        - --metrics-bind-addr=127.0.0.1:8080
-        - --leader-elect
-        command:
-        - /manager
-        image: gcr.io/openshift-gce-devel/cluster-api-operator-amd64:dev
-        name: manager
-        resources:
-          limits:
-            cpu: 100m
-            memory: 150Mi
-          requests:
-            cpu: 100m
-            memory: 100Mi
       terminationGracePeriodSeconds: 10
       tolerations:
       - effect: NoSchedule
