@@ -22,11 +22,9 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"sigs.k8s.io/cluster-api-operator/webhook"
 	"time"
 
 	"github.com/spf13/pflag"
-
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -34,6 +32,7 @@ import (
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/klog/v2"
 	"k8s.io/klog/v2/klogr"
+	"sigs.k8s.io/cluster-api-operator/internal/webhook"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	clusterctlv1 "sigs.k8s.io/cluster-api/cmd/clusterctl/api/v1alpha3"
 	"sigs.k8s.io/cluster-api/feature"
@@ -42,10 +41,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+
 	// +kubebuilder:scaffold:imports
 
 	operatorv1 "sigs.k8s.io/cluster-api-operator/api/v1alpha1"
-	"sigs.k8s.io/cluster-api-operator/controllers"
+	"sigs.k8s.io/cluster-api-operator/internal/controllers"
 )
 
 var (
@@ -70,11 +70,11 @@ var (
 func init() {
 	klog.InitFlags(nil)
 
+	// +kubebuilder:scaffold:scheme
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(operatorv1.AddToScheme(scheme))
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	utilruntime.Must(clusterctlv1.AddToScheme(scheme))
-	// +kubebuilder:scaffold:scheme
 }
 
 // InitFlags initializes the flags.
@@ -128,6 +128,7 @@ func main() {
 
 	if profilerAddress != "" {
 		klog.Infof("Profiler listening for requests at %s", profilerAddress)
+
 		go func() {
 			klog.Info(http.ListenAndServe(profilerAddress, nil))
 		}()
@@ -164,6 +165,7 @@ func main() {
 
 	// +kubebuilder:scaffold:builder
 	setupLog.Info("starting manager", "version", version.Get().String())
+
 	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
@@ -229,14 +231,17 @@ func setupWebhooks(mgr ctrl.Manager) {
 		setupLog.Error(err, "unable to create webhook", "webhook", "CoreProvider")
 		os.Exit(1)
 	}
+
 	if err := (&webhook.BootstrapProviderWebhook{}).SetupWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "BootstrapProvider")
 		os.Exit(1)
 	}
+
 	if err := (&webhook.ControlPlaneProviderWebhook{}).SetupWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "ControlPlaneProvider")
 		os.Exit(1)
 	}
+
 	if err := (&webhook.InfrastructureProviderWebhook{}).SetupWebhookWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create webhook", "webhook", "InfrastructureProvider")
 		os.Exit(1)

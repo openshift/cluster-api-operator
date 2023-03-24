@@ -23,25 +23,15 @@ cd "${REPO_ROOT}" || exit 1
 # shellcheck source=./hack/ensure-go.sh
 source "${REPO_ROOT}/hack/ensure-go.sh"
 
-# shellcheck source=./hack/ensure-kustomize.sh
-source "${REPO_ROOT}/hack/ensure-kustomize.sh"
-
 # shellcheck source=./hack/ensure-kind.sh
 source "${REPO_ROOT}/hack/ensure-kind.sh"
 
-  
 # Build operator images
-ARCH="$(go env GOARCH)"
-export REGISTRY=gcr.io/k8s-staging-cluster-api
-export IMAGE_NAME=cluster-api-operator
-export TAG=dev
-export ARCH
-export PULL_POLICY=IfNotPresent
-export OPERATOR_IMAGE=$REGISTRY/$IMAGE_NAME-$ARCH:$TAG
-
 export CERT_MANAGER_VERSION=v1.7.1
+export OPERATOR_IMAGE=gcr.io/k8s-staging-capi-operator/cluster-api-operator:dev
+
 echo "+ Building CAPI operator image"
-make docker-build
+make docker-build-e2e
 
 echo "+ Running e2e tests"
 make test-e2e
