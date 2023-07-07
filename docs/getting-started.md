@@ -25,8 +25,15 @@ Wait for the cert-manager to be ready.
 
 Install the Cluster API operator:
 
+1. Operator can be installed directly by applying manifests from release assets:
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/cluster-api-operator/releases/latest/download/operator-components.yaml
+```
+2. Another option is using helm charts:
+```bash
+helm repo add capi-operator https://kubernetes-sigs.github.io/cluster-api-operator
+helm repo update
+helm install capi-operator capi-operator/cluster-api-operator --create-namespace -n capi-operator-system
 ```
 
 ***Note***: :warning: Take a look at RBAC permissions and adjust them, the operator will be creating and updating CRDs.
@@ -61,7 +68,7 @@ Next, BootstrapProvider, ControlPlaneProvider and InfrastructureProvider can be 
 If provider requires variables to be set, a secret containing them has to be created and it has to be in the same namespace as the provider.
 
 It's also recommended to include github-token in the secret. This token is used to fetch the provider repository and it is required for the provider to be installed. 
-Operator might exceed the rate limit of the github API without the token.
+Operator might exceed the rate limit of the github API without the token. Similarly to [clusterctl](https://cluster-api.sigs.k8s.io/clusterctl/overview.html?highlight=github_token#avoiding-github-rate-limiting), the token need only `repo` scope.
 
 Example:
 ```yaml

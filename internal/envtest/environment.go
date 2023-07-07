@@ -30,7 +30,6 @@ import (
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
-	"github.com/pkg/errors"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -68,7 +67,6 @@ func init() {
 	utilruntime.Must(admissionv1.AddToScheme(scheme.Scheme))
 	utilruntime.Must(operatorv1.AddToScheme(scheme.Scheme))
 	utilruntime.Must(clusterctlv1.AddToScheme(scheme.Scheme))
-	utilruntime.Must(admissionv1.AddToScheme(scheme.Scheme))
 }
 
 var (
@@ -79,8 +77,8 @@ var (
 		Jitter:   0.4,
 	}
 
-	errAlreadyStarted      = errors.New("environment has already been started")
-	errAlreadyStopped      = errors.New("environment has already been stopped")
+	errAlreadyStarted      = fmt.Errorf("environment has already been started")
+	errAlreadyStopped      = fmt.Errorf("environment has already been stopped")
 	clusterAPIVersionRegex = regexp.MustCompile(`^(\W)sigs.k8s.io/cluster-api v(.+)`)
 )
 
@@ -234,7 +232,10 @@ func (e *Environment) CleanupAndWait(ctx context.Context, objs ...client.Object)
 
 				return false, nil
 			})
-		errs = append(errs, errors.Wrapf(err, "key %s, %s is not being deleted from the testenv client cache", o.GetObjectKind().GroupVersionKind().String(), key))
+
+		if err != nil {
+			errs = append(errs, fmt.Errorf("key %s, %s is not being deleted from the testenv client cache: %w", o.GetObjectKind().GroupVersionKind().String(), key, err))
+		}
 	}
 
 	return kerrors.NewAggregate(errs)
@@ -268,7 +269,7 @@ func (e *Environment) CreateAndWait(ctx context.Context, obj client.Object, opts
 
 			return true, nil
 		}); err != nil {
-		return errors.Wrapf(err, "object %s, %s is not being added to the testenv client cache", obj.GetObjectKind().GroupVersionKind().String(), key)
+		return fmt.Errorf("object %s, %s is not being added to the testenv client cache: %w", obj.GetObjectKind().GroupVersionKind().String(), key, err)
 	}
 
 	return nil
@@ -289,6 +290,33 @@ func (e *Environment) CreateNamespace(ctx context.Context, generateName string) 
 	}
 
 	return ns, nil
+}
+
+func (e *Environment) EnsureNamespaceExists(ctx context.Context, namespace string) error {
+	// Check if the namespace exists
+	ns := &corev1.Namespace{}
+
+	err := e.Client.Get(ctx, client.ObjectKey{Name: namespace}, ns)
+	if err == nil {
+		return nil
+	}
+
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("unexpected error during namespace checking: %w", err)
+	}
+
+	// Create the namespace if it doesn't exist
+	newNamespace := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: namespace,
+		},
+	}
+
+	if err := e.Client.Create(ctx, newNamespace); err != nil {
+		return fmt.Errorf("unable to create namespace %s: %w", namespace, err)
+	}
+
+	return nil
 }
 
 func getFilePathToClusterctlCRDs(root string) string {
