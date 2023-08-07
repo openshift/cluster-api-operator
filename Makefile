@@ -23,6 +23,9 @@ ROOT:=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
 .DEFAULT_GOAL:=help
 
+GO_VERSION ?= 1.20.4
+GO_CONTAINER_IMAGE ?= docker.io/library/golang:$(GO_VERSION)
+
 # Use GOPROXY environment variable if set
 GOPROXY := $(shell go env GOPROXY)
 ifeq ($(GOPROXY),)
@@ -40,6 +43,7 @@ CURL_RETRIES=3
 
 # Directories
 TOOLS_DIR := $(ROOT)/hack/tools
+TEST_DIR := $(ROOT)/test
 CHART_UPDATE_DIR := $(ROOT)/hack/chart-update
 TOOLS_BIN_DIR := $(TOOLS_DIR)/bin
 JUNIT_REPORT_DIR := $(TOOLS_DIR)/_out
@@ -82,7 +86,7 @@ GOTESTSUM_VER := v1.6.4
 GOTESTSUM_BIN := gotestsum
 GOTESTSUM := $(TOOLS_BIN_DIR)/$(GOTESTSUM_BIN)-$(GOTESTSUM_VER)
 
-GINKGO_VER := v2.9.7
+GINKGO_VER := v2.11.0
 GINKGO_BIN := ginkgo
 GINKGO := $(TOOLS_BIN_DIR)/$(GINKGO_BIN)-$(GINKGO_VER)
 
@@ -126,6 +130,9 @@ CONTROLLER_IMG_TAG ?= $(CONTROLLER_IMG)-$(ARCH):$(TAG)
 # Set build time variables including version details
 LDFLAGS := $(shell $(ROOT)/hack/version.sh)
 
+# Default cert-manager version
+CERT_MANAGER_VERSION ?= v1.12.2
+
 # E2E configuration
 GINKGO_NOCOLOR ?= false
 GINKGO_ARGS ?=
@@ -134,14 +141,14 @@ E2E_CONF_FILE ?= $(ROOT)/test/e2e/config/operator-dev.yaml
 E2E_CONF_FILE_ENVSUBST ?= $(ROOT)/test/e2e/config/operator-dev-envsubst.yaml
 SKIP_CLEANUP ?= false
 SKIP_CREATE_MGMT_CLUSTER ?= false
-E2E_CERT_MANAGER_VERSION ?= v1.11.1
+E2E_CERT_MANAGER_VERSION ?= $(CERT_MANAGER_VERSION)
 E2E_OPERATOR_IMAGE ?= $(CONTROLLER_IMG):$(TAG)
 
 # Relase
 RELEASE_TAG ?= $(shell git describe --abbrev=0 2>/dev/null)
 HELM_CHART_TAG := $(shell echo $(RELEASE_TAG) | cut -c 2-)
 RELEASE_ALIAS_TAG ?= $(PULL_BASE_REF)
-RELEASE_DIR := out
+RELEASE_DIR := $(ROOT)/out
 CHART_DIR := $(RELEASE_DIR)/charts/cluster-api-operator
 CHART_PACKAGE_DIR := $(RELEASE_DIR)/package
 
@@ -239,6 +246,10 @@ test-junit: $(SETUP_ENVTEST) $(GOTESTSUM) ## Run tests with verbose setting and 
 operator: ## Build operator binary
 	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/operator cmd/main.go
 
+.PHONY: plugin
+plugin: ## Build plugin binary
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/clusterctl-operator cmd/plugin/main.go
+
 ## --------------------------------------
 ## Lint / Verify
 ## --------------------------------------
@@ -246,6 +257,7 @@ operator: ## Build operator binary
 .PHONY: lint
 lint: $(GOLANGCI_LINT) ## Lint the codebase
 	$(GOLANGCI_LINT) run -v $(GOLANGCI_LINT_EXTRA_ARGS) --timeout=10m
+	cd $(TEST_DIR); $(GOLANGCI_LINT) run --path-prefix $(TEST_DIR) -v $(GOLANGCI_LINT_EXTRA_ARGS) --timeout=10m
 
 .PHONY: lint-fix
 lint-fix: $(GOLANGCI_LINT) ## Lint the codebase and run auto-fixers if supported by the linter
@@ -262,7 +274,7 @@ verify:
 
 .PHONY: verify-modules
 verify-modules: modules
-	@if !(git diff --quiet HEAD -- go.sum go.mod $(TOOLS_DIR)/go.mod $(TOOLS_DIR)/go.sum $(CHART_UPDATE_DIR)/go.mod $(CHART_UPDATE_DIR)/go.sum); then \
+	@if !(git diff --quiet HEAD -- go.sum go.mod $(TOOLS_DIR)/go.mod $(TOOLS_DIR)/go.sum $(CHART_UPDATE_DIR)/go.mod $(CHART_UPDATE_DIR)/go.sum $(TEST_DIR)/go.mod $(TEST_DIR)/go.sum); then \
 		git diff; \
 		echo "go module files are out of date"; exit 1; \
 	fi
@@ -307,6 +319,7 @@ modules: ## Runs go mod to ensure modules are up to date.
 	go mod tidy
 	cd $(TOOLS_DIR); go mod tidy
 	cd $(CHART_UPDATE_DIR); go mod tidy
+	cd $(TEST_DIR); go mod tidy
 
 ## --------------------------------------
 ## Docker
@@ -315,12 +328,12 @@ modules: ## Runs go mod to ensure modules are up to date.
 .PHONY: docker-pull-prerequisites
 docker-pull-prerequisites:
 	docker pull docker.io/docker/dockerfile:1.4
-	docker pull docker.io/library/golang:1.19.0
+	docker pull $(GO_CONTAINER_IMAGE)
 	docker pull gcr.io/distroless/static:latest
 
 .PHONY: docker-build
 docker-build: docker-pull-prerequisites ## Build the docker image for controller-manager
-	docker build --build-arg goproxy=$(GOPROXY) --build-arg ARCH=$(ARCH) --build-arg LDFLAGS="$(LDFLAGS)" . -t $(CONTROLLER_IMG_TAG)
+	docker build --build-arg builder_image=$(GO_CONTAINER_IMAGE) --build-arg goproxy=$(GOPROXY) --build-arg ARCH=$(ARCH) --build-arg LDFLAGS="$(LDFLAGS)" . -t $(CONTROLLER_IMG_TAG)
 
 .PHONY: docker-push
 docker-push: ## Push the docker image
@@ -364,10 +377,21 @@ set-manifest-pull-policy:
 	$(info Updating kustomize pull policy file for manager resources)
 	sed -i'' -e 's@imagePullPolicy: .*@imagePullPolicy: '"$(PULL_POLICY)"'@' $(TARGET_RESOURCE)
 
+.PHONY: set-manifest-pull-policy-chart
+set-manifest-pull-policy-chart: $(YQ)
+	$(info Updating image pull policy value for helm chart)
+	$(YQ) eval '.image.manager.pullPolicy = "$(PULL_POLICY)"' $(TARGET_RESOURCE) -i
+
 .PHONY: set-manifest-image
 set-manifest-image:
 	$(info Updating kustomize image patch file for manager resource)
 	sed -i'' -e 's@image: .*@image: '"${MANIFEST_IMG}:$(MANIFEST_TAG)"'@' $(TARGET_RESOURCE)
+
+.PHONY: set-manifest-image-chart
+set-manifest-image-chart: $(YQ)
+	$(info Updating image URL and tag values for helm chart)
+	$(YQ) eval '.image.manager.repository = "$(MANIFEST_IMG)"' $(TARGET_RESOURCE) -i
+	$(YQ) eval '.image.manager.tag = "$(MANIFEST_TAG)"' $(TARGET_RESOURCE) -i
 
 ## --------------------------------------
 ## Release
@@ -402,18 +426,20 @@ manifest-modification: # Set the manifest images to the staging/production bucke
 
 .PHONY: chart-manifest-modification
 chart-manifest-modification: # Set the manifest images to the staging/production bucket.
-	$(MAKE) set-manifest-image \
+	$(MAKE) set-manifest-image-chart \
 		MANIFEST_IMG=$(REGISTRY)/$(IMAGE_NAME) MANIFEST_TAG=$(RELEASE_TAG) \
-		TARGET_RESOURCE="./config/chart/manager_image_patch.yaml"
-	$(MAKE) set-manifest-pull-policy PULL_POLICY=IfNotPresent TARGET_RESOURCE="./config/chart/manager_pull_policy.yaml"
+		TARGET_RESOURCE="$(ROOT)/hack/charts/cluster-api-operator/values.yaml"
+	$(MAKE) set-manifest-pull-policy-chart PULL_POLICY=IfNotPresent TARGET_RESOURCE="$(ROOT)/hack/charts/cluster-api-operator/values.yaml"
 
 .PHONY: release-manifests
 release-manifests: $(KUSTOMIZE) $(RELEASE_DIR) ## Builds the manifests to publish with a release
 	$(KUSTOMIZE) build ./config/default > $(RELEASE_DIR)/operator-components.yaml
-
+	
+.PHONY: release-chart
 release-chart: $(HELM) $(KUSTOMIZE) $(RELEASE_DIR) $(CHART_DIR) $(CHART_PACKAGE_DIR) ## Builds the chart to publish with a release
+	cp -rf $(ROOT)/hack/charts/cluster-api-operator/. $(CHART_DIR)
 	$(KUSTOMIZE) build ./config/chart > $(CHART_DIR)/templates/operator-components.yaml
-	cp -rf $(ROOT)/hack/chart/. $(CHART_DIR)
+	$(ROOT)/hack/inject-cert-manager-helm.sh $(CERT_MANAGER_VERSION)
 	$(HELM) package $(CHART_DIR) --app-version=$(HELM_CHART_TAG) --version=$(HELM_CHART_TAG) --destination=$(CHART_PACKAGE_DIR)
 
 .PHONY: release-staging
@@ -464,12 +490,14 @@ clean-release: ## Remove the release folder
 .PHONY: test-e2e
 test-e2e: $(KUSTOMIZE)
 	$(MAKE) release-manifests
+	$(MAKE) release-chart
 	$(MAKE) test-e2e-run
 
 .PHONY: test-e2e-run
-test-e2e-run: $(GINKGO) $(ENVSUBST) ## Run e2e tests
+test-e2e-run: $(GINKGO) $(ENVSUBST) $(HELM) ## Run e2e tests
 	E2E_OPERATOR_IMAGE=$(E2E_OPERATOR_IMAGE) E2E_CERT_MANAGER_VERSION=$(E2E_CERT_MANAGER_VERSION) $(ENVSUBST) < $(E2E_CONF_FILE) > $(E2E_CONF_FILE_ENVSUBST) && \
 	$(GINKGO) -v -trace -tags=e2e --junit-report=junit_cluster_api_operator_e2e.xml --output-dir="${JUNIT_REPORT_DIR}" --no-color=$(GINKGO_NOCOLOR) $(GINKGO_ARGS) ./test/e2e -- \
 		-e2e.artifacts-folder="$(ARTIFACTS)" \
-		-e2e.config="$(E2E_CONF_FILE_ENVSUBST)"  -e2e.components=$(ROOT)/$(RELEASE_DIR)/operator-components.yaml \
-		-e2e.skip-resource-cleanup=$(SKIP_CLEANUP) -e2e.use-existing-cluster=$(SKIP_CREATE_MGMT_CLUSTER) $(E2E_ARGS)
+		-e2e.config="$(E2E_CONF_FILE_ENVSUBST)"  -e2e.components=$(RELEASE_DIR)/operator-components.yaml \
+		-e2e.skip-resource-cleanup=$(SKIP_CLEANUP) -e2e.use-existing-cluster=$(SKIP_CREATE_MGMT_CLUSTER) \
+		-e2e.helm-binary-path=$(HELM) -e2e.chart-path=$(CHART_PACKAGE_DIR)/cluster-api-operator-$(HELM_CHART_TAG).tgz $(E2E_ARGS)

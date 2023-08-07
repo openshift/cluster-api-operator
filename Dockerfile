@@ -15,7 +15,10 @@
 # limitations under the License.
 
 # Build the manager binary
-FROM golang:1.19.0 as builder
+# Run this with docker build --build-arg builder_image=<golang:x.y.z>
+ARG builder_image
+
+FROM ${builder_image} as builder
 WORKDIR /workspace
 
 # Run this with docker build --build-arg goproxy=$(go env GOPROXY) to override the goproxy
@@ -35,19 +38,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 # Copy the sources
 COPY ./ ./
 
-# Cache the go build into the the Go’s compiler cache folder so we take benefits of compiler caching across docker build calls
-RUN --mount=type=cache,target=/root/.cache/go-build \
-  --mount=type=cache,target=/go/pkg/mod \
-  go build cmd/main.go
-
 # Build
 ARG path=cmd/main.go
 ARG ARCH
 ARG ldflags
 
-# Do not force rebuild of up-to-date packages (do not use -a) and use the compiler cache folder
-RUN --mount=type=cache,target=/root/.cache/go-build \
-  --mount=type=cache,target=/go/pkg/mod \
+# Do not force rebuild of up-to-date packages (do not use -a)
+RUN --mount=type=cache,target=/go/pkg/mod \
   CGO_ENABLED=0 GOOS=linux GOARCH=${ARCH} \
   go build -ldflags "${ldflags} -extldflags '-static'" \
   -o manager ${path}

@@ -17,9 +17,11 @@ limitations under the License.
 package controller
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
-	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"strings"
 
@@ -131,15 +133,6 @@ func (p *phaseReconciler) initializePhaseReconciler(ctx context.Context) (reconc
 		return reconcile.Result{}, wrapPhaseError(err, operatorv1.UnknownProviderReason)
 	}
 
-	spec := p.provider.GetSpec()
-
-	// Store some provider specific inputs for passing it to clusterctl library
-	p.options = repository.ComponentsOptions{
-		TargetNamespace:     p.provider.GetNamespace(),
-		SkipTemplateProcess: false,
-		Version:             spec.Version,
-	}
-
 	return reconcile.Result{}, nil
 }
 
@@ -162,9 +155,30 @@ func (p *phaseReconciler) load(ctx context.Context) (reconcile.Result, error) {
 		labelSelector = p.provider.GetSpec().FetchConfig.Selector
 	}
 
-	p.repo, err = p.configmapRepository(ctx, labelSelector)
+	additionalManifests, err := p.fetchAddionalManifests(ctx)
+	if err != nil {
+		return reconcile.Result{}, wrapPhaseError(err, "failed to load additional manifests")
+	}
+
+	p.repo, err = p.configmapRepository(ctx, labelSelector, additionalManifests)
 	if err != nil {
 		return reconcile.Result{}, wrapPhaseError(err, "failed to load the repository")
+	}
+
+	if spec.Version == "" {
+		// User didn't set the version, so we need to find the latest one from the matching config maps.
+		repoVersions, err := p.repo.GetVersions()
+		if err != nil {
+			return reconcile.Result{}, wrapPhaseError(err, fmt.Sprintf("failed to get a list of available versions for provider %q", p.provider.GetName()))
+		}
+
+		spec.Version, err = getLatestVersion(repoVersions)
+		if err != nil {
+			return reconcile.Result{}, wrapPhaseError(err, fmt.Sprintf("failed to get the latest version for provider %q", p.provider.GetName()))
+		}
+
+		// Add latest version to the provider spec.
+		p.provider.SetSpec(spec)
 	}
 
 	// Store some provider specific inputs for passing it to clusterctl library
@@ -209,9 +223,23 @@ func (p *phaseReconciler) secretReader(ctx context.Context) (configclient.Reader
 	}
 
 	// If provided store fetch config url in memory reader.
-	if p.provider.GetSpec().FetchConfig != nil && p.provider.GetSpec().FetchConfig.URL != "" {
-		log.Info("Custom fetch configuration url was provided")
-		return mr.AddProvider(p.provider.GetName(), util.ClusterctlProviderType(p.provider), p.provider.GetSpec().FetchConfig.URL)
+	if p.provider.GetSpec().FetchConfig != nil {
+		if p.provider.GetSpec().FetchConfig.URL != "" {
+			log.Info("Custom fetch configuration url was provided")
+			return mr.AddProvider(p.provider.GetName(), util.ClusterctlProviderType(p.provider), p.provider.GetSpec().FetchConfig.URL)
+		}
+
+		if p.provider.GetSpec().FetchConfig.Selector != nil {
+			log.Info("Custom fetch configuration config map was provided")
+
+			// To register a new provider from the config map, we need to specify a URL with a valid
+			// format. However, since we're using data from a local config map, URLs are not needed.
+			// As a workaround, we add a fake but well-formatted URL.
+
+			fakeURL := "https://example.com/my-provider"
+
+			return mr.AddProvider(p.provider.GetName(), util.ClusterctlProviderType(p.provider), fakeURL)
+		}
 	}
 
 	return mr, nil
@@ -219,7 +247,7 @@ func (p *phaseReconciler) secretReader(ctx context.Context) (configclient.Reader
 
 // configmapRepository use clusterctl NewMemoryRepository structure to store the manifests
 // and metadata from a given configmap.
-func (p *phaseReconciler) configmapRepository(ctx context.Context, labelSelector *metav1.LabelSelector) (repository.Repository, error) {
+func (p *phaseReconciler) configmapRepository(ctx context.Context, labelSelector *metav1.LabelSelector, additionalManifests string) (repository.Repository, error) {
 	mr := repository.NewMemoryRepository()
 	mr.WithPaths("", "components.yaml")
 
@@ -261,15 +289,68 @@ func (p *phaseReconciler) configmapRepository(ctx context.Context, labelSelector
 
 		mr.WithFile(version, metadataFile, []byte(metadata))
 
-		components, ok := cm.Data[componentsConfigMapKey]
-		if !ok {
-			return nil, fmt.Errorf("ConfigMap %s/%s has no components", cm.Namespace, cm.Name)
+		components, err := getComponentsData(cm)
+		if err != nil {
+			return nil, err
+		}
+
+		if additionalManifests != "" {
+			components = components + "\n---\n" + additionalManifests
 		}
 
 		mr.WithFile(version, mr.ComponentsPath(), []byte(components))
 	}
 
 	return mr, nil
+}
+
+func (p *phaseReconciler) fetchAddionalManifests(ctx context.Context) (string, error) {
+	cm := &corev1.ConfigMap{}
+
+	if p.provider.GetSpec().AdditionalManifestsRef != nil {
+		key := types.NamespacedName{Namespace: p.provider.GetSpec().AdditionalManifestsRef.Namespace, Name: p.provider.GetSpec().AdditionalManifestsRef.Name}
+
+		if err := p.ctrlClient.Get(ctx, key, cm); err != nil {
+			return "", fmt.Errorf("failed to get ConfigMap %s/%s: %w", key.Namespace, key.Name, err)
+		}
+	}
+
+	return cm.Data[additionalManifestsConfigMapKey], nil
+}
+
+// getComponentsData returns components data based on if it's compressed or not.
+func getComponentsData(cm corev1.ConfigMap) (string, error) {
+	// Data is not compressed, return it immediately.
+	if cm.GetAnnotations()[compressedAnnotation] != "true" {
+		components, ok := cm.Data[componentsConfigMapKey]
+		if !ok {
+			return "", fmt.Errorf("ConfigMap %s/%s Data has no components", cm.Namespace, cm.Name)
+		}
+
+		return components, nil
+	}
+
+	// Otherwise we have to decompress the data first.
+	compressedComponents, ok := cm.BinaryData[componentsConfigMapKey]
+	if !ok {
+		return "", fmt.Errorf("ConfigMap %s/%s BinaryData has no components", cm.Namespace, cm.Name)
+	}
+
+	zr, err := gzip.NewReader(bytes.NewReader(compressedComponents))
+	if err != nil {
+		return "", err
+	}
+
+	components, err := io.ReadAll(zr)
+	if err != nil {
+		return "", fmt.Errorf("cannot decompress data from ConfigMap %s/%s", cm.Namespace, cm.Name)
+	}
+
+	if err := zr.Close(); err != nil {
+		return "", err
+	}
+
+	return string(components), nil
 }
 
 // validateRepoCAPIVersion checks that the repo is using the correct version.
@@ -373,7 +454,7 @@ func (p *phaseReconciler) install(ctx context.Context) (reconcile.Result, error)
 
 	if err := clusterClient.ProviderComponents().Create(p.components.Objs()); err != nil {
 		reason := "Install failed"
-		if errors.Is(err, wait.ErrWaitTimeout) {
+		if wait.Interrupted(err) {
 			reason = "Timed out waiting for deployment to become ready"
 		}
 
@@ -475,4 +556,28 @@ func repositoryFactory(providerConfig configclient.Provider, configVariablesClie
 	}
 
 	return nil, fmt.Errorf("invalid provider url. Only GitHub and GitLab are supported for %q schema", rURL.Scheme)
+}
+
+func getLatestVersion(repoVersions []string) (string, error) {
+	if len(repoVersions) == 0 {
+		err := fmt.Errorf("no versions available")
+
+		return "", wrapPhaseError(err, operatorv1.ComponentsFetchErrorReason)
+	}
+
+	// Initialize latest version with the first element value.
+	latestVersion := versionutil.MustParseSemantic(repoVersions[0])
+
+	for _, versionString := range repoVersions {
+		parsedVersion, err := versionutil.ParseSemantic(versionString)
+		if err != nil {
+			return "", wrapPhaseError(err, fmt.Sprintf("cannot parse version string: %s", versionString))
+		}
+
+		if latestVersion.LessThan(parsedVersion) {
+			latestVersion = parsedVersion
+		}
+	}
+
+	return "v" + latestVersion.String(), nil
 }

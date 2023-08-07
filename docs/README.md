@@ -26,6 +26,7 @@
   * [Modifying a Provider](#modifying-a-provider)
   * [Deleting a Provider](#deleting-a-provider)
 - [Air-gapped Environment](#air-gapped-environment)
+- [Injecting additional manifests](#injecting-additional-manifests)
 
 # Introduction
 
@@ -56,7 +57,9 @@ The lexicon used in this document is described in more detail [here](https://git
 
 ## Installation
 
-Before installing the Cluster API Operator, you must first ensure that cert-manager is installed, as the operator does not manage cert-manager installations. To install cert-manager, run the following command:
+### Method 1: Apply Manifests from Release Assets
+
+Before installing the Cluster API Operator this way, you must first ensure that cert-manager is installed, as the operator does not manage cert-manager installations. To install cert-manager, run the following command:
 
 ```bash
 kubectl apply -f https://github.com/jetstack/cert-manager/releases/latest/download/cert-manager.yaml
@@ -64,11 +67,7 @@ kubectl apply -f https://github.com/jetstack/cert-manager/releases/latest/downlo
 
 Wait for cert-manager to be ready before proceeding.
 
-After cert-manager is successfully installed, you can install the Cluster API operator using one of the following methods:
-
-### Method 1: Apply Manifests from Release Assets
-
-Install the Cluster API operator directly by applying the latest release assets:
+After cert-manager is successfully installed, you can install the Cluster API operator directly by applying the latest release assets:
 
 ```bash
 kubectl apply -f https://github.com/kubernetes-sigs/cluster-api-operator/releases/latest/download/operator-components.yaml
@@ -84,7 +83,43 @@ helm repo update
 helm install capi-operator capi-operator/cluster-api-operator --create-namespace -n capi-operator-system
 ```
 
-⚠️ **Note:** Make sure to review and adjust the RBAC permissions as needed. The operator will create and update CRDs, so appropriate permissions should be granted. We are continuously working to determine the best way to handle this.
+#### Installing cert-manager using Helm chart
+
+CAPI operator Helm chart supports provisioning of cert-manager as a dependency. It is disabled by default, but you can enable it with `--set cert-manager.enabled=true` option to `helm install` command or inside of `cert-manager` section in [values.yaml](https://github.com/kubernetes-sigs/cluster-api-operator/blob/main/hack/charts/cluster-api-operator/values.yaml) file. Additionally you can define other [parameters](https://artifacthub.io/packages/helm/cert-manager/cert-manager#configuration) provided by the cert-manager chart.
+
+#### Installing providers using Helm chart
+
+The operator Helm chart supports a "quickstart" option for bootstrapping a management cluster. The user experience is relatively similar to [clusterctl init](https://cluster-api.sigs.k8s.io/clusterctl/commands/init.html?highlight=init#clusterctl-init):
+
+```bash
+helm install capi-operator capi-operator/cluster-api-operator --create-namespace -n capi-operator-system --set infrastructure=docker:v1.4.2  --wait # core Cluster API with kubeadm bootstrap and control plane providers will also be installed 
+```
+
+```bash
+helm install capi-operator capi-operator/cluster-api-operator --create-namespace -n capi-operator-system —set infrastructure=docker,azure  --wait # core Cluster API with kubeadm bootstrap and control plane providers will also be installed 
+```
+
+```bash
+helm install capi-operator capi-operator/cluster-api-operator --create-namespace -n capi-operator-system —set infrastructure="capd-custom-ns:docker:v1.4.2;capz-custom-ns:azure:v1.10.0"  --wait # core Cluster API with kubeadm bootstrap and control plane providers will also be installed 
+```
+
+```bash
+helm install capi-operator capi-operator/cluster-api-operator --create-namespace -n capi-operator-system --set core=cluster-api:v1.4.2 --set controlPlane=kubeadm:v1.4.2 --set bootstrap=kubeadm:v1.4.2  --set infrastructure=docker:v1.4.2  --wait
+```
+
+For more complex operations, please refer to our API documentation.
+
+#### Configuring operator deployment using Helm
+
+The operator Helm chart provides multiple ways to configure deployment. For instance, you can update images and image pull secrets for containers, which is important for air-gapped environments. Also you can add labels and annotations, modify resource requests and limits, and so on. For full list of available options take a look at [values.yaml](https://github.com/kubernetes-sigs/cluster-api-operator/blob/main/hack/charts/cluster-api-operator/values.yaml) file.
+
+#### Helm installation example
+
+The following command will install cert-manager, CAPI operator itself with modified log level, Core CAPI provider with kubeadm bootstrap and control plane, and Docker infrastructure.
+
+```bash
+helm install capi-operator capi-operator/cluster-api-operator --create-namespace -n capi-operator-system --set infrastructure=docker:v1.5.0  --set cert-manager.enabled=true --set logLevel=4 --wait
+```
 
 ## Configuration
 
@@ -644,3 +679,69 @@ spec:
     selector:
       matchLabels:
         provider-components: azure
+```
+
+### Situation when manifests do not fit into configmap
+
+There is a limit on the [maximum size](https://kubernetes.io/docs/concepts/configuration/configmap/#motivation) of a configmap - 1MiB. If the manifests do not fit into this size, Kubernetes will generate an error and provider installation fail. To avoid this, you can archive the manifests and put them in the configmap that way.
+
+For example, you have two files: `components.yaml` and `metadata.yaml`. To create a working config map you need:
+
+1. Archive components.yaml using `gzip` cli tool
+
+```sh
+gzip -c components.yaml > components.gz
+```
+
+2. Create a configmap manifest from the archived data
+
+```sh
+kubectl create configmap v1.9.3 --namespace=capz-system --from-file=components=components.gz --from-file=metadata=metadata.yaml --dry-run=client -o yaml > configmap.yaml
+```
+
+3. Edit the file by adding "provider.cluster.x-k8s.io/compressed: true" annotation
+
+```sh
+yq eval -i '.metadata.annotations += {"provider.cluster.x-k8s.io/compressed": "true"}' configmap.yaml
+```
+
+**Note**: without this annotation operator won't be able to determine if the data is compressed or not.
+
+4. Add labels that will be used to match the configmap in `fetchConfig` section of the provider
+
+```sh
+yq eval -i '.metadata.labels += {"my-label": "label-value"}' configmap.yaml
+```
+
+5. Create a configmap in your kubernetes cluster using kubectl
+
+```sh
+kubectl create -f configmap.yaml
+```
+
+## Injecting additional manifests
+
+It is possible to inject additional manifests when installing/upgrading a provider. This can be useful when you need to add extra RBAC resources to the provider controller, for example.
+The field `AdditionalManifests` is a reference to a ConfigMap that contains additional manifests, which will be applied together with the provider components. The key for storing these manifests has to be `manifests`.
+The manifests are applied only once when a certain release is installed/upgraded. If the namespace is not specified, the namespace of the provider will be used. There is no validation of the YAML content inside the ConfigMap.
+
+```yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: additional-manifests
+  namespace: capi-system
+data:
+  manifests: |
+    # Additional manifests go here
+---
+apiVersion: operator.cluster.x-k8s.io/v1alpha1
+kind: CoreProvider
+metadata:
+  name: cluster-api
+  namespace: capi-system
+spec:
+  additionalManifests:
+      name: additional-manifests
+```
