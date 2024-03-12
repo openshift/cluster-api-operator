@@ -2,6 +2,8 @@ module sigs.k8s.io/cluster-api-operator
 
 go 1.21
 
+replace sigs.k8s.io/cluster-api => sigs.k8s.io/cluster-api v1.5.1
+
 require (
 	github.com/MakeNowJust/heredoc v1.0.0
 	github.com/evanphx/json-patch/v5 v5.9.0
