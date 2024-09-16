@@ -9,6 +9,7 @@ approvers:
 - jnpacker
 - serngawy
 - marek-veber
+- PanSpagetka
 reviewers:
 - JoelSpeed
 - RadekManak
@@ -21,5 +22,6 @@ reviewers:
 - racheljpg
 - sub-mod
 - theobarberbany
+- PanSpagetka
 component: Cloud Compute
 subcomponent: Cluster API Providers
