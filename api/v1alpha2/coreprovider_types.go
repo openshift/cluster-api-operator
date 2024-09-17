@@ -31,6 +31,7 @@ type CoreProviderStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:resource:path=coreproviders,shortName=cacp,scope=Namespaced
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="InstalledVersion",type="string",JSONPath=".status.installedVersion"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
@@ -55,5 +56,6 @@ type CoreProviderList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&CoreProvider{}, &CoreProviderList{})
+	ProviderLists = append(ProviderLists, &CoreProviderList{})
+	Providers = append(Providers, &CoreProvider{})
 }

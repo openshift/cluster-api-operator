@@ -18,23 +18,15 @@ package genericprovider
 
 import (
 	operatorv1 "sigs.k8s.io/cluster-api-operator/api/v1alpha2"
-	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type GenericProvider interface {
 	client.Object
-	conditions.Setter
-	GetSpec() operatorv1.ProviderSpec
-	SetSpec(in operatorv1.ProviderSpec)
-	GetStatus() operatorv1.ProviderStatus
-	SetStatus(in operatorv1.ProviderStatus)
-	GetObject() client.Object
-	GetType() string
+	operatorv1.GenericProvider
 }
 
 type GenericProviderList interface {
 	client.ObjectList
-	GetObject() client.ObjectList
-	GetItems() []GenericProvider
+	operatorv1.GenericProviderList
 }

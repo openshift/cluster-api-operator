@@ -24,32 +24,98 @@ import (
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	operatorv1 "sigs.k8s.io/cluster-api-operator/api/v1alpha2"
+	clusterctlv1 "sigs.k8s.io/cluster-api/cmd/clusterctl/api/v1alpha3"
 	"sigs.k8s.io/cluster-api/cmd/clusterctl/client/cluster"
+	"sigs.k8s.io/cluster-api/cmd/clusterctl/client/repository"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// clientProxy implements the Proxy interface from the clusterctl. It is used to
+// interact with the management cluster.
+type clientProxy struct {
+	client.Client
+}
+
+func (c clientProxy) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {
+	switch l := list.(type) {
+	case *clusterctlv1.ProviderList:
+		return listProviders(ctx, c.Client, l)
+	default:
+		return c.Client.List(ctx, l, opts...)
+	}
+}
+
+func (c clientProxy) Get(ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+	switch o := obj.(type) {
+	case *clusterctlv1.Provider:
+		return nil
+	default:
+		return c.Client.Get(ctx, key, o, opts...)
+	}
+}
+
+func (c clientProxy) Patch(ctx context.Context, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+	switch o := obj.(type) {
+	case *clusterctlv1.Provider:
+		return nil
+	default:
+		return c.Client.Patch(ctx, o, patch, opts...)
+	}
+}
+
+func listProviders(ctx context.Context, cl client.Client, list *clusterctlv1.ProviderList) error {
+	providers := []operatorv1.GenericProviderList{
+		&operatorv1.CoreProviderList{},
+		&operatorv1.InfrastructureProviderList{},
+		&operatorv1.BootstrapProviderList{},
+		&operatorv1.ControlPlaneProviderList{},
+		&operatorv1.AddonProviderList{},
+		&operatorv1.IPAMProviderList{},
+	}
+
+	for _, group := range providers {
+		g, ok := group.(client.ObjectList)
+		if !ok {
+			continue
+		}
+
+		if err := cl.List(ctx, g); err != nil {
+			return err
+		}
+
+		for _, p := range group.GetItems() {
+			list.Items = append(list.Items, getProvider(p, ""))
+		}
+	}
+
+	return nil
+}
 
 // controllerProxy implements the Proxy interface from the clusterctl. It is used to
 // interact with the management cluster.
 type controllerProxy struct {
-	ctrlClient client.Client
+	ctrlClient clientProxy
 	ctrlConfig *rest.Config
 }
 
 var _ cluster.Proxy = &controllerProxy{}
 
-func (k *controllerProxy) CurrentNamespace() (string, error)           { return "default", nil }
-func (k *controllerProxy) ValidateKubernetesVersion() error            { return nil }
-func (k *controllerProxy) GetConfig() (*rest.Config, error)            { return k.ctrlConfig, nil }
-func (k *controllerProxy) NewClient() (client.Client, error)           { return k.ctrlClient, nil }
-func (k *controllerProxy) GetContexts(prefix string) ([]string, error) { return nil, nil }
-func (k *controllerProxy) CheckClusterAvailable() error                { return nil }
+func (k *controllerProxy) CurrentNamespace() (string, error)                { return "default", nil }
+func (k *controllerProxy) ValidateKubernetesVersion() error                 { return nil }
+func (k *controllerProxy) GetConfig() (*rest.Config, error)                 { return k.ctrlConfig, nil }
+func (k *controllerProxy) NewClient(context.Context) (client.Client, error) { return k.ctrlClient, nil }
+func (k *controllerProxy) GetContexts(prefix string) ([]string, error)      { return nil, nil }
+func (k *controllerProxy) CheckClusterAvailable(context.Context) error      { return nil }
 
 // GetResourceNames returns the list of resource names which begin with prefix.
-func (k *controllerProxy) GetResourceNames(groupVersion, kind string, options []client.ListOption, prefix string) ([]string, error) {
-	objList, err := listObjByGVK(k.ctrlClient, groupVersion, kind, options)
+func (k *controllerProxy) GetResourceNames(ctx context.Context, groupVersion, kind string, options []client.ListOption, prefix string) ([]string, error) {
+	objList, err := listObjByGVK(ctx, k.ctrlClient, groupVersion, kind, options)
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +134,7 @@ func (k *controllerProxy) GetResourceNames(groupVersion, kind string, options []
 }
 
 // ListResources lists namespaced and cluster-wide resources for a component matching the labels.
-func (k *controllerProxy) ListResources(labels map[string]string, namespaces ...string) ([]unstructured.Unstructured, error) {
+func (k *controllerProxy) ListResources(ctx context.Context, labels map[string]string, namespaces ...string) ([]unstructured.Unstructured, error) {
 	resourceList := []*metav1.APIResourceList{
 		{
 			GroupVersion: "v1",
@@ -117,7 +183,7 @@ func (k *controllerProxy) ListResources(labels map[string]string, namespaces ...
 		for _, resourceKind := range resourceGroup.APIResources {
 			if resourceKind.Namespaced {
 				for _, namespace := range namespaces {
-					objList, err := listObjByGVK(k.ctrlClient, resourceGroup.GroupVersion, resourceKind.Kind, []client.ListOption{client.MatchingLabels(labels), client.InNamespace(namespace)})
+					objList, err := listObjByGVK(ctx, k.ctrlClient, resourceGroup.GroupVersion, resourceKind.Kind, []client.ListOption{client.MatchingLabels(labels), client.InNamespace(namespace)})
 					if err != nil {
 						return nil, err
 					}
@@ -127,11 +193,13 @@ func (k *controllerProxy) ListResources(labels map[string]string, namespaces ...
 					ret = append(ret, objList.Items...)
 				}
 			} else {
-				objList, err := listObjByGVK(k.ctrlClient, resourceGroup.GroupVersion, resourceKind.Kind, []client.ListOption{client.MatchingLabels(labels)})
+				objList, err := listObjByGVK(ctx, k.ctrlClient, resourceGroup.GroupVersion, resourceKind.Kind, []client.ListOption{client.MatchingLabels(labels)})
 				if err != nil {
 					return nil, err
 				}
+
 				klog.V(3).InfoS("listed", "kind", resourceKind.Kind, "count", len(objList.Items))
+
 				ret = append(ret, objList.Items...)
 			}
 		}
@@ -140,8 +208,7 @@ func (k *controllerProxy) ListResources(labels map[string]string, namespaces ...
 	return ret, nil
 }
 
-func listObjByGVK(c client.Client, groupVersion, kind string, options []client.ListOption) (*unstructured.UnstructuredList, error) {
-	ctx := context.TODO()
+func listObjByGVK(ctx context.Context, c client.Client, groupVersion, kind string, options []client.ListOption) (*unstructured.UnstructuredList, error) {
 	objList := new(unstructured.UnstructuredList)
 	objList.SetAPIVersion(groupVersion)
 	objList.SetKind(kind)
@@ -153,4 +220,26 @@ func listObjByGVK(c client.Client, groupVersion, kind string, options []client.L
 	}
 
 	return objList, nil
+}
+
+type repositoryProxy struct {
+	repository.Client
+
+	components repository.Components
+}
+
+type repositoryClient struct {
+	components repository.Components
+}
+
+func (r repositoryClient) Raw(ctx context.Context, options repository.ComponentsOptions) ([]byte, error) {
+	return nil, nil
+}
+
+func (r repositoryClient) Get(ctx context.Context, options repository.ComponentsOptions) (repository.Components, error) {
+	return r.components, nil
+}
+
+func (r repositoryProxy) Components() repository.ComponentsClient {
+	return repositoryClient{r.components}
 }

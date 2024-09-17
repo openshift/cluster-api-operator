@@ -70,10 +70,6 @@ clusterctl-settings.json
 # test results
 _artifacts
 
-# openshift specific
-openshift/tools/bin/
-openshift/tools/bin/*
-
 # e2e output
 test/e2e/config/operator-dev-envsubst.yaml
 

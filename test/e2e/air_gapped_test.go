@@ -37,10 +37,13 @@ import (
 
 var _ = Describe("Install Core Provider in an air-gapped environment", func() {
 	It("should successfully create config maps with Core Provider manifests", func() {
+		// Ensure that there are no Cluster API installed
+		deleteClusterAPICRDs(bootstrapClusterProxy)
+
 		bootstrapCluster := bootstrapClusterProxy.GetClient()
 		configMaps := []corev1.ConfigMap{}
 
-		for _, fileName := range []string{"core-cluster-api-v1.4.2.yaml", "core-cluster-api-v1.4.3.yaml"} {
+		for _, fileName := range []string{"core-cluster-api-v1.5.4.yaml", "core-cluster-api-v1.6.0.yaml"} {
 			coreProviderComponents, err := os.ReadFile(customManifestsFolder + fileName)
 			Expect(err).ToNot(HaveOccurred(), "Failed to read the core provider manifests file")
 
@@ -50,6 +53,14 @@ var _ = Describe("Install Core Provider in an air-gapped environment", func() {
 
 			configMaps = append(configMaps, configMap)
 		}
+
+		By("Creating capi-system namespace")
+		namespace := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: capiSystemNamespace,
+			},
+		}
+		Expect(bootstrapCluster.Create(ctx, namespace)).To(Succeed())
 
 		By("Applying core provider manifests to the cluster")
 		for _, cm := range configMaps {
@@ -62,7 +73,7 @@ var _ = Describe("Install Core Provider in an air-gapped environment", func() {
 		coreProvider := &operatorv1.CoreProvider{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      coreProviderName,
-				Namespace: operatorNamespace,
+				Namespace: capiSystemNamespace,
 			},
 			Spec: operatorv1.CoreProviderSpec{
 				ProviderSpec: operatorv1.ProviderSpec{
@@ -74,6 +85,7 @@ var _ = Describe("Install Core Provider in an air-gapped environment", func() {
 							},
 						},
 					},
+					Version: "v1.5.4",
 				},
 			},
 		}
@@ -83,7 +95,7 @@ var _ = Describe("Install Core Provider in an air-gapped environment", func() {
 		By("Waiting for the core provider deployment to be ready")
 		framework.WaitForDeploymentsAvailable(ctx, framework.WaitForDeploymentsAvailableInput{
 			Getter:     bootstrapClusterProxy.GetClient(),
-			Deployment: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: coreProviderDeploymentName, Namespace: operatorNamespace}},
+			Deployment: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: coreProviderDeploymentName, Namespace: capiSystemNamespace}},
 		}, e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
 
 		By("Waiting for core provider to be ready")
@@ -97,37 +109,10 @@ var _ = Describe("Install Core Provider in an air-gapped environment", func() {
 		}), e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
 	})
 
-	It("should successfully downgrade a CoreProvider (latest -> v1.4.2)", func() {
+	It("should successfully upgrade a CoreProvider (v1.5.4 -> latest)", func() {
 		bootstrapCluster := bootstrapClusterProxy.GetClient()
 		coreProvider := &operatorv1.CoreProvider{}
-		key := client.ObjectKey{Namespace: operatorNamespace, Name: coreProviderName}
-		Expect(bootstrapCluster.Get(ctx, key, coreProvider)).To(Succeed())
-
-		coreProvider.Spec.Version = previousCAPIVersion
-
-		Expect(bootstrapCluster.Update(ctx, coreProvider)).To(Succeed())
-
-		By("Waiting for the core provider deployment to be ready")
-		framework.WaitForDeploymentsAvailable(ctx, framework.WaitForDeploymentsAvailableInput{
-			Getter:     bootstrapClusterProxy.GetClient(),
-			Deployment: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: coreProviderDeploymentName, Namespace: operatorNamespace}},
-		}, e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
-
-		By("Waiting for core provider to be ready")
-		WaitFor(ctx, For(coreProvider).In(bootstrapCluster).ToSatisfy(
-			HaveStatusCondition(&coreProvider.Status.Conditions, operatorv1.ProviderInstalledCondition),
-		), e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
-
-		By("Waiting for status.IntalledVersion to be set")
-		WaitFor(ctx, For(coreProvider).In(bootstrapCluster).ToSatisfy(func() bool {
-			return ptr.Equal(coreProvider.Status.InstalledVersion, ptr.To(previousCAPIVersion))
-		}), e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
-	})
-
-	It("should successfully upgrade a CoreProvider (v1.4.2 -> latest)", func() {
-		bootstrapCluster := bootstrapClusterProxy.GetClient()
-		coreProvider := &operatorv1.CoreProvider{}
-		key := client.ObjectKey{Namespace: operatorNamespace, Name: coreProviderName}
+		key := client.ObjectKey{Namespace: capiSystemNamespace, Name: coreProviderName}
 		Expect(bootstrapCluster.Get(ctx, key, coreProvider)).To(Succeed())
 
 		coreProvider.Spec.Version = ""
@@ -137,7 +122,7 @@ var _ = Describe("Install Core Provider in an air-gapped environment", func() {
 		By("Waiting for the core provider deployment to be ready")
 		framework.WaitForDeploymentsAvailable(ctx, framework.WaitForDeploymentsAvailableInput{
 			Getter:     bootstrapClusterProxy.GetClient(),
-			Deployment: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: coreProviderDeploymentName, Namespace: operatorNamespace}},
+			Deployment: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: coreProviderDeploymentName, Namespace: capiSystemNamespace}},
 		}, e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
 
 		By("Waiting for core provider to be ready")
@@ -155,7 +140,7 @@ var _ = Describe("Install Core Provider in an air-gapped environment", func() {
 		bootstrapCluster := bootstrapClusterProxy.GetClient()
 		coreProvider := &operatorv1.CoreProvider{ObjectMeta: metav1.ObjectMeta{
 			Name:      coreProviderName,
-			Namespace: operatorNamespace,
+			Namespace: capiSystemNamespace,
 		}}
 
 		Expect(bootstrapCluster.Delete(ctx, coreProvider)).To(Succeed())
@@ -163,7 +148,7 @@ var _ = Describe("Install Core Provider in an air-gapped environment", func() {
 		By("Waiting for the core provider deployment to be deleted")
 		WaitForDelete(ctx, For(&appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
 			Name:      coreProviderDeploymentName,
-			Namespace: operatorNamespace,
+			Namespace: capiSystemNamespace,
 		}}).In(bootstrapCluster), e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
 
 		By("Waiting for the core provider object to be deleted")
@@ -176,7 +161,7 @@ var _ = Describe("Install Core Provider in an air-gapped environment", func() {
 		bootstrapCluster := bootstrapClusterProxy.GetClient()
 		configMaps := []corev1.ConfigMap{}
 
-		for _, fileName := range []string{"core-cluster-api-v1.4.2.yaml", "core-cluster-api-v1.4.3.yaml"} {
+		for _, fileName := range []string{"core-cluster-api-v1.5.4.yaml", "core-cluster-api-v1.6.0.yaml"} {
 			coreProviderComponents, err := os.ReadFile(customManifestsFolder + fileName)
 			Expect(err).ToNot(HaveOccurred(), "Failed to read the core provider manifests file")
 
@@ -191,5 +176,13 @@ var _ = Describe("Install Core Provider in an air-gapped environment", func() {
 		for _, cm := range configMaps {
 			Expect(bootstrapCluster.Delete(ctx, &cm)).To(Succeed())
 		}
+
+		By("Deleting capi-system namespace")
+		namespace := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: capiSystemNamespace,
+			},
+		}
+		Expect(bootstrapCluster.Delete(ctx, namespace)).To(Succeed())
 	})
 })
