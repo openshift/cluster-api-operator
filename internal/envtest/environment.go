@@ -29,7 +29,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/onsi/ginkgo/v2"
 	admissionv1 "k8s.io/api/admissionregistration/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -41,25 +40,23 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
-	"k8s.io/klog/v2/klogr"
+	"k8s.io/klog/v2/textlogger"
 	operatorv1 "sigs.k8s.io/cluster-api-operator/api/v1alpha2"
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	clusterctlv1 "sigs.k8s.io/cluster-api/cmd/clusterctl/api/v1alpha3"
+
 	"sigs.k8s.io/cluster-api/util/kubeconfig"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 )
 
 func init() {
 	klog.InitFlags(nil)
 
-	logger := klogr.New()
-	// Additionally force all of the controllers to use the Ginkgo logger.
-	ctrl.SetLogger(logger)
-	// Add logger for ginkgo.
-	klog.SetOutput(ginkgo.GinkgoWriter)
+	ctrl.SetLogger(textlogger.NewLogger(textlogger.NewConfig()))
 
 	// Calculate the scheme.
 	utilruntime.Must(apiextensionsv1.AddToScheme(scheme.Scheme))
@@ -104,10 +101,16 @@ func New(uncachedObjs ...client.Object) *Environment {
 	root := path.Join(path.Dir(filename), "..", "..")
 	crdPaths := []string{
 		filepath.Join(root, "config", "crd", "bases"),
+		// cert-manager CRDs are stored there.
+		filepath.Join(root, "test", "testdata"),
 	}
 
 	if capiPath := getFilePathToClusterctlCRDs(root); capiPath != "" {
 		crdPaths = append(crdPaths, capiPath)
+	}
+
+	if err := operatorv1.AddToScheme(scheme.Scheme); err != nil {
+		klog.Fatalf("Failed to set scheme for manager: %v", err)
 	}
 
 	// Create the test environment.
@@ -129,18 +132,21 @@ func New(uncachedObjs ...client.Object) *Environment {
 	}
 
 	options := manager.Options{
-		Scheme:                scheme.Scheme,
-		MetricsBindAddress:    "0",
-		ClientDisableCacheFor: objs,
+		Scheme: scheme.Scheme,
+		Metrics: metricsserver.Options{
+			BindAddress: "0",
+		},
+		Client: client.Options{
+			Cache: &client.CacheOptions{
+				DisableFor: objs,
+			},
+		},
 	}
 
 	mgr, err := ctrl.NewManager(env.Config, options)
 	if err != nil {
 		klog.Fatalf("Failed to start testenv manager: %v", err)
 	}
-
-	// Set minNodeStartupTimeout for Test, so it does not need to be at least 30s
-	clusterv1.SetMinNodeStartupTimeout(metav1.Duration{Duration: 1 * time.Millisecond})
 
 	return &Environment{
 		Manager: mgr,

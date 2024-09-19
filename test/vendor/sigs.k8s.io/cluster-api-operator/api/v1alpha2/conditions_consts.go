@@ -44,8 +44,11 @@ const (
 	// CAPIVersionIncompatibilityReason documents that the provider version is incompatible with operator.
 	CAPIVersionIncompatibilityReason = "CAPIVersionIncompatibility"
 
-	// ComponentsFetchErrorReason documents that an error occurred fetching the componets.
+	// ComponentsFetchErrorReason documents that an error occurred fetching the components.
 	ComponentsFetchErrorReason = "ComponentsFetchError"
+
+	// ComponentsUpgradeErrorReason documents that an error occurred while upgrading the components.
+	ComponentsUpgradeErrorReason = "ComponentsUpgradeError"
 
 	// OldComponentsDeletionErrorReason documents that an error occurred deleting the old components prior to upgrading.
 	OldComponentsDeletionErrorReason = "OldComponentsDeletionError"
@@ -55,9 +58,18 @@ const (
 
 	// InvalidGithubTokenReason documents that the provided github token is invalid.
 	InvalidGithubTokenReason = "InvalidGithubTokenError"
+
+	// NoDeploymentAvailableConditionReason documents that there is no Available condition for provider deployment yet.
+	NoDeploymentAvailableConditionReason = "NoDeploymentAvailableConditionReason"
+
+	// UnsupportedProviderDowngradeReason documents that the provider downgrade is not supported.
+	UnsupportedProviderDowngradeReason = "UnsupportedProviderDowngradeReason"
 )
 
 const (
 	// ProviderInstalledCondition documents a Provider that has been installed.
 	ProviderInstalledCondition clusterv1.ConditionType = "ProviderInstalled"
+
+	// ProviderUpgradedCondition documents a Provider that has been recently upgraded.
+	ProviderUpgradedCondition clusterv1.ConditionType = "ProviderUpgraded"
 )

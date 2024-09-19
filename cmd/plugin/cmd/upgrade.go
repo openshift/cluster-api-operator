@@ -17,18 +17,39 @@ limitations under the License.
 package cmd
 
 import (
+	"sort"
+
 	"github.com/spf13/cobra"
 )
 
 var upgradeCmd = &cobra.Command{
-	Use:   "upgrade",
-	Short: "Upgrade core and provider components in a management cluster using the Cluster API Operator.",
-	Args:  cobra.NoArgs,
+	Use:     "upgrade",
+	GroupID: groupManagement,
+	Short:   "Upgrade core and provider components in a management cluster",
+	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return cmd.Help()
 	},
 }
 
 func init() {
+	upgradeCmd.AddCommand(upgradePlanCmd)
+	upgradeCmd.AddCommand(upgradeApplyCmd)
 	RootCmd.AddCommand(upgradeCmd)
+}
+
+func sortUpgradeItems(plan upgradePlan) {
+	sort.Slice(plan.Providers, func(i, j int) bool {
+		return plan.Providers[i].Type < plan.Providers[j].Type ||
+			(plan.Providers[i].Type == plan.Providers[j].Type && plan.Providers[i].Name < plan.Providers[j].Name) ||
+			(plan.Providers[i].Type == plan.Providers[j].Type && plan.Providers[i].Name == plan.Providers[j].Name && plan.Providers[i].Namespace < plan.Providers[j].Namespace)
+	})
+}
+
+func prettifyTargetVersion(version string) string {
+	if version == "" {
+		return "Already up to date"
+	}
+
+	return version
 }

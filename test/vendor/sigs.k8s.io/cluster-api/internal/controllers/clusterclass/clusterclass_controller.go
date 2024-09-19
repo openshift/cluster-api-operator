@@ -58,8 +58,7 @@ import (
 
 // Reconciler reconciles the ClusterClass object.
 type Reconciler struct {
-	Client    client.Client
-	APIReader client.Reader
+	Client client.Client
 
 	// WatchFilterValue is the label value used to filter events prior to reconciliation.
 	WatchFilterValue string
@@ -114,7 +113,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Re
 
 	patchHelper, err := patch.NewHelper(clusterClass, r.Client)
 	if err != nil {
-		return ctrl.Result{}, errors.Wrapf(err, "failed to create patch helper for %s", tlog.KObj{Obj: clusterClass})
+		return ctrl.Result{}, err
 	}
 
 	defer func() {
@@ -124,7 +123,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ctrl.Request) (_ ctrl.Re
 			patchOpts = append(patchOpts, patch.WithStatusObservedGeneration{})
 		}
 		if err := patchHelper.Patch(ctx, clusterClass, patchOpts...); err != nil {
-			reterr = kerrors.NewAggregate([]error{reterr, errors.Wrapf(err, "failed to patch %s", tlog.KObj{Obj: clusterClass})})
+			reterr = kerrors.NewAggregate([]error{reterr, err})
 			return
 		}
 	}()
@@ -169,11 +168,20 @@ func (r *Reconciler) reconcileExternalReferences(ctx context.Context, clusterCla
 		}
 	}
 
+	for _, mpClass := range clusterClass.Spec.Workers.MachinePools {
+		if mpClass.Template.Bootstrap.Ref != nil {
+			refs = append(refs, mpClass.Template.Bootstrap.Ref)
+		}
+		if mpClass.Template.Infrastructure.Ref != nil {
+			refs = append(refs, mpClass.Template.Infrastructure.Ref)
+		}
+	}
+
 	// Ensure all referenced objects are owned by the ClusterClass.
 	// Nb. Some external objects can be referenced multiple times in the ClusterClass,
 	// but we only want to set the owner reference once per unique external object.
 	// For example the same KubeadmConfigTemplate could be referenced in multiple MachineDeployment
-	// classes.
+	// or MachinePool classes.
 	errs := []error{}
 	reconciledRefs := sets.Set[string]{}
 	outdatedRefs := map[*corev1.ObjectReference]*corev1.ObjectReference{}
@@ -316,6 +324,7 @@ func addNewStatusVariable(variable clusterv1.ClusterClassVariable, from string) 
 			{
 				From:     from,
 				Required: variable.Required,
+				Metadata: variable.Metadata,
 				Schema:   variable.Schema,
 			},
 		}}
@@ -326,6 +335,7 @@ func addDefinitionToExistingStatusVariable(variable clusterv1.ClusterClassVariab
 	newVariableDefinition := clusterv1.ClusterClassStatusVariableDefinition{
 		From:     from,
 		Required: variable.Required,
+		Metadata: variable.Metadata,
 		Schema:   variable.Schema,
 	}
 	combinedVariable.Definitions = append(existingVariable.Definitions, newVariableDefinition)
@@ -334,7 +344,7 @@ func addDefinitionToExistingStatusVariable(variable clusterv1.ClusterClassVariab
 	// If definitions already conflict, no need to check.
 	if !combinedVariable.DefinitionsConflict {
 		currentDefinition := combinedVariable.Definitions[0]
-		if !(currentDefinition.Required == newVariableDefinition.Required && reflect.DeepEqual(currentDefinition.Schema, newVariableDefinition.Schema)) {
+		if !(currentDefinition.Required == newVariableDefinition.Required && reflect.DeepEqual(currentDefinition.Schema, newVariableDefinition.Schema) && reflect.DeepEqual(currentDefinition.Metadata, newVariableDefinition.Metadata)) {
 			combinedVariable.DefinitionsConflict = true
 		}
 	}
@@ -365,7 +375,7 @@ func (r *Reconciler) reconcileExternal(ctx context.Context, clusterClass *cluste
 	// Initialize the patch helper.
 	patchHelper, err := patch.NewHelper(obj, r.Client)
 	if err != nil {
-		return errors.Wrapf(err, "failed to create patch helper for %s", tlog.KObj{Obj: obj})
+		return err
 	}
 
 	// Set external object ControllerReference to the ClusterClass.
@@ -374,11 +384,7 @@ func (r *Reconciler) reconcileExternal(ctx context.Context, clusterClass *cluste
 	}
 
 	// Patch the external object.
-	if err := patchHelper.Patch(ctx, obj); err != nil {
-		return errors.Wrapf(err, "failed to patch object %s", tlog.KObj{Obj: obj})
-	}
-
-	return nil
+	return patchHelper.Patch(ctx, obj)
 }
 
 func uniqueObjectRefKey(ref *corev1.ObjectReference) string {
@@ -389,7 +395,7 @@ func uniqueObjectRefKey(ref *corev1.ObjectReference) string {
 // of the ExtensionConfig.
 func (r *Reconciler) extensionConfigToClusterClass(ctx context.Context, o client.Object) []reconcile.Request {
 	res := []ctrl.Request{}
-
+	log := ctrl.LoggerFrom(ctx)
 	ext, ok := o.(*runtimev1.ExtensionConfig)
 	if !ok {
 		panic(fmt.Sprintf("Expected an ExtensionConfig but got a %T", o))
@@ -409,8 +415,16 @@ func (r *Reconciler) extensionConfigToClusterClass(ctx context.Context, o client
 		}
 		for _, patch := range clusterClass.Spec.Patches {
 			if patch.External != nil && patch.External.DiscoverVariablesExtension != nil {
-				res = append(res, ctrl.Request{NamespacedName: client.ObjectKey{Namespace: clusterClass.Namespace, Name: clusterClass.Name}})
-				break
+				extName, err := runtimeclient.ExtensionNameFromHandlerName(*patch.External.DiscoverVariablesExtension)
+				if err != nil {
+					log.Error(err, "failed to reconcile ClusterClass for ExtensionConfig")
+					continue
+				}
+				if extName == ext.Name {
+					res = append(res, ctrl.Request{NamespacedName: client.ObjectKey{Namespace: clusterClass.Namespace, Name: clusterClass.Name}})
+					// Once we've added the ClusterClass once we can break here.
+					break
+				}
 			}
 		}
 	}

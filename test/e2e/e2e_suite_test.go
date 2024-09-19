@@ -30,18 +30,22 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
 	operatorv1alpha1 "sigs.k8s.io/cluster-api-operator/api/v1alpha1"
 	operatorv1 "sigs.k8s.io/cluster-api-operator/api/v1alpha2"
+	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 
 	. "sigs.k8s.io/cluster-api-operator/test/framework"
 	"sigs.k8s.io/cluster-api/test/framework"
 	"sigs.k8s.io/cluster-api/test/framework/bootstrap"
 	"sigs.k8s.io/cluster-api/test/framework/clusterctl"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 )
 
@@ -291,7 +295,7 @@ func initBootstrapCluster(bootstrapClusterProxy framework.ClusterProxy, config *
 
 func initHelmCluster(clusterProxy framework.ClusterProxy, config *clusterctl.E2EConfig) {
 	Expect(clusterProxy).ToNot(BeNil(), "Invalid argument. bootstrapClusterProxy can't be nil when calling initHelmCluster")
-	logFolder := filepath.Join(artifactFolder, "clusters", bootstrapClusterProxy.GetName())
+	logFolder := filepath.Join(artifactFolder, "clusters", helmClusterProxy.GetName())
 	Expect(os.MkdirAll(logFolder, 0750)).To(Succeed(), "Invalid argument. Log folder can't be created for initHelmCluster")
 	ensureCertManager(clusterProxy, config)
 }
@@ -334,6 +338,25 @@ func ensureCertManager(clusterProxy framework.ClusterProxy, config *clusterctl.E
 	})
 }
 
+func deleteClusterAPICRDs(clusterProxy framework.ClusterProxy) {
+	// To get all Cluster API CRDs we need filter them by labels:
+	//   cluster.x-k8s.io/provider: cluster-api
+	//   clusterctl.cluster.x-k8s.io: ""
+	crds := &apiextensionsv1.CustomResourceDefinitionList{}
+	Expect(clusterProxy.GetClient().List(ctx, crds, &client.ListOptions{
+		LabelSelector: labels.SelectorFromSet(
+			map[string]string{
+				"cluster.x-k8s.io/provider":   "cluster-api",
+				"clusterctl.cluster.x-k8s.io": "",
+			},
+		),
+	})).To(Succeed())
+
+	for _, crd := range crds.Items {
+		Expect(clusterProxy.GetClient().Delete(ctx, &crd)).To(Succeed())
+	}
+}
+
 func initHelmChart() {
 	helmChart = &HelmChart{
 		BinaryPath: helmBinaryPath,
@@ -352,6 +375,9 @@ var _ = SynchronizedAfterSuite(func() {
 }, func() {
 	// After all ParallelNodes.
 
+	dumpClusterLogs(bootstrapClusterProxy)
+	dumpClusterLogs(helmClusterProxy)
+
 	By("Tearing down the management clusters")
 	if !skipCleanup {
 		tearDown(bootstrapClusterProvider, bootstrapClusterProxy)
@@ -365,5 +391,42 @@ func tearDown(clusterProvider bootstrap.ClusterProvider, clusterProxy framework.
 	}
 	if clusterProvider != nil {
 		clusterProvider.Dispose(ctx)
+	}
+}
+
+func dumpClusterLogs(clusterProxy framework.ClusterProxy) {
+	if clusterProxy == nil {
+		return
+	}
+
+	clusterLogCollector := clusterProxy.GetLogCollector()
+	if clusterLogCollector == nil {
+		return
+	}
+
+	nodes, err := clusterProxy.GetClientSet().CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		fmt.Printf("Failed to get nodes for the bootstrap cluster: %v\n", err)
+		return
+	}
+
+	for i := range nodes.Items {
+		nodeName := nodes.Items[i].GetName()
+		err = clusterLogCollector.CollectMachineLog(
+			ctx,
+			clusterProxy.GetClient(),
+			// The bootstrap cluster is not expected to be a CAPI cluster, so in order to re-use the logCollector,
+			// we create a fake machine that wraps the node.
+			// NOTE: This assumes a naming convention between machines and nodes, which e.g. applies to the bootstrap clusters generated with kind.
+			//       This might not work if you are using an existing bootstrap cluster provided by other means.
+			&clusterv1.Machine{
+				Spec:       clusterv1.MachineSpec{ClusterName: nodeName},
+				ObjectMeta: metav1.ObjectMeta{Name: nodeName},
+			},
+			filepath.Join(artifactFolder, "clusters", bootstrapClusterProxy.GetName(), "machines", nodeName),
+		)
+		if err != nil {
+			fmt.Printf("Failed to get logs for the bootstrap cluster node %s: %v\n", nodeName, err)
+		}
 	}
 }

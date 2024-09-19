@@ -31,6 +31,7 @@ type InfrastructureProviderStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:resource:path=infrastructureproviders,shortName=caip,scope=Namespaced
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="InstalledVersion",type="string",JSONPath=".status.installedVersion"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
@@ -55,5 +56,6 @@ type InfrastructureProviderList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&InfrastructureProvider{}, &InfrastructureProviderList{})
+	ProviderLists = append(ProviderLists, &InfrastructureProviderList{})
+	Providers = append(Providers, &InfrastructureProvider{})
 }

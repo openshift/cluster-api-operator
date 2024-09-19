@@ -34,6 +34,7 @@ import (
 
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
 	runtimehooksv1 "sigs.k8s.io/cluster-api/exp/runtime/hooks/api/v1alpha1"
+	"sigs.k8s.io/cluster-api/exp/runtime/topologymutation"
 	"sigs.k8s.io/cluster-api/internal/contract"
 	"sigs.k8s.io/cluster-api/internal/controllers/topology/cluster/patches/api"
 	patchvariables "sigs.k8s.io/cluster-api/internal/controllers/topology/cluster/patches/variables"
@@ -55,7 +56,7 @@ func NewGenerator(patch *clusterv1.ClusterClassPatch) api.Generator {
 func (j *jsonPatchGenerator) Generate(_ context.Context, _ client.Object, req *runtimehooksv1.GeneratePatchesRequest) (*runtimehooksv1.GeneratePatchesResponse, error) {
 	resp := &runtimehooksv1.GeneratePatchesResponse{}
 
-	globalVariables := patchvariables.ToMap(req.Variables)
+	globalVariables := topologymutation.ToMap(req.Variables)
 
 	// Loop over all templates.
 	errs := []error{}
@@ -63,7 +64,7 @@ func (j *jsonPatchGenerator) Generate(_ context.Context, _ client.Object, req *r
 		item := &req.Items[i]
 		objectKind := item.Object.Object.GetObjectKind().GroupVersionKind().Kind
 
-		templateVariables := patchvariables.ToMap(item.Variables)
+		templateVariables := topologymutation.ToMap(item.Variables)
 
 		// Calculate the list of patches which match the current template.
 		matchingPatches := []clusterv1.PatchDefinition{}
@@ -80,7 +81,7 @@ func (j *jsonPatchGenerator) Generate(_ context.Context, _ client.Object, req *r
 		}
 
 		// Merge template-specific and global variables.
-		variables, err := patchvariables.MergeVariableMaps(globalVariables, templateVariables)
+		variables, err := topologymutation.MergeVariableMaps(globalVariables, templateVariables)
 		if err != nil {
 			errs = append(errs, errors.Wrapf(err, "failed to merge global and template-specific variables for %q", objectKind))
 			continue
@@ -179,6 +180,35 @@ func matchesSelector(req *runtimehooksv1.GeneratePatchesRequestItem, templateVar
 						return true
 					}
 					if strings.HasSuffix(mdClass, "*") && strings.HasPrefix(unquoted, strings.TrimSuffix(mdClass, "*")) {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	// Check if the request is for a BootstrapConfigTemplate or an InfrastructureMachinePoolTemplate
+	// of one of the configured MachinePoolClasses.
+	if selector.MatchResources.MachinePoolClass != nil {
+		if req.HolderReference.Kind == "MachinePool" &&
+			(req.HolderReference.FieldPath == "spec.template.spec.bootstrap.configRef" ||
+				req.HolderReference.FieldPath == "spec.template.spec.infrastructureRef") {
+			// Read the builtin.machinePool.class variable.
+			templateMPClassJSON, err := patchvariables.GetVariableValue(templateVariables, "builtin.machinePool.class")
+
+			// If the builtin variable could be read.
+			if err == nil {
+				// If templateMPClass matches one of the configured MachinePoolClasses.
+				for _, mpClass := range selector.MatchResources.MachinePoolClass.Names {
+					// We have to quote mpClass as templateMPClassJSON is a JSON string (e.g. "default-worker").
+					if mpClass == "*" || string(templateMPClassJSON.Raw) == strconv.Quote(mpClass) {
+						return true
+					}
+					unquoted, _ := strconv.Unquote(string(templateMPClassJSON.Raw))
+					if strings.HasPrefix(mpClass, "*") && strings.HasSuffix(unquoted, strings.TrimPrefix(mpClass, "*")) {
+						return true
+					}
+					if strings.HasSuffix(mpClass, "*") && strings.HasPrefix(unquoted, strings.TrimSuffix(mpClass, "*")) {
 						return true
 					}
 				}

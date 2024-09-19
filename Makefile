@@ -23,7 +23,7 @@ ROOT:=$(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
 
 .DEFAULT_GOAL:=help
 
-GO_VERSION ?= 1.20.4
+GO_VERSION ?= 1.21.8
 GO_CONTAINER_IMAGE ?= docker.io/library/golang:$(GO_VERSION)
 
 # Use GOPROXY environment variable if set
@@ -66,11 +66,11 @@ IMAGE_REVIEWERS ?= $(shell ./hack/get-project-maintainers.sh)
 
 # Binaries.
 # Need to use abspath so we can invoke these from subdirectories
-CONTROLLER_GEN_VER := v0.11.4
+CONTROLLER_GEN_VER := v0.14.0
 CONTROLLER_GEN_BIN := controller-gen
 CONTROLLER_GEN := $(TOOLS_BIN_DIR)/$(CONTROLLER_GEN_BIN)-$(CONTROLLER_GEN_VER)
 
-GOLANGCI_LINT_VER := v1.53.2
+GOLANGCI_LINT_VER := v1.57.2
 GOLANGCI_LINT_BIN := golangci-lint
 GOLANGCI_LINT := $(TOOLS_BIN_DIR)/$(GOLANGCI_LINT_BIN)-$(GOLANGCI_LINT_VER)
 
@@ -78,15 +78,15 @@ KUSTOMIZE_VER := v5.0.1
 KUSTOMIZE_BIN := kustomize
 KUSTOMIZE := $(TOOLS_BIN_DIR)/$(KUSTOMIZE_BIN)-$(KUSTOMIZE_VER)
 
-SETUP_ENVTEST_VER := v0.0.0-20211110210527-619e6b92dab9
+SETUP_ENVTEST_VER := v0.0.0-20240215143116-d0396a3d6f9f
 SETUP_ENVTEST_BIN := setup-envtest
 SETUP_ENVTEST := $(TOOLS_BIN_DIR)/$(SETUP_ENVTEST_BIN)-$(SETUP_ENVTEST_VER)
 
-GOTESTSUM_VER := v1.6.4
+GOTESTSUM_VER := v1.11.0
 GOTESTSUM_BIN := gotestsum
 GOTESTSUM := $(TOOLS_BIN_DIR)/$(GOTESTSUM_BIN)-$(GOTESTSUM_VER)
 
-GINKGO_VER := v2.12.0
+GINKGO_VER := v2.17.1
 GINKGO_BIN := ginkgo
 GINKGO := $(TOOLS_BIN_DIR)/$(GINKGO_BIN)-$(GINKGO_VER)
 
@@ -94,27 +94,27 @@ ENVSUBST_VER := v2.0.0-20210730161058-179042472c46
 ENVSUBST_BIN := envsubst
 ENVSUBST := $(TOOLS_BIN_DIR)/$(ENVSUBST_BIN)-$(ENVSUBST_VER)
 
-GO_APIDIFF_VER := v0.5.0
+GO_APIDIFF_VER := v0.8.2
 GO_APIDIFF_BIN := go-apidiff
 GO_APIDIFF := $(TOOLS_BIN_DIR)/$(GO_APIDIFF_BIN)-$(GO_APIDIFF_VER)
 
-HELM_VER := v3.8.1
+HELM_VER := v3.14.4
 HELM_BIN := helm
 HELM := $(TOOLS_BIN_DIR)/$(HELM_BIN)-$(HELM_VER)
 
-YQ_VER := v4.25.2
+YQ_VER := v4.35.2
 YQ_BIN := yq
 YQ := $(TOOLS_BIN_DIR)/$(YQ_BIN)-$(YQ_VER)
 
-KPROMO_VER := v3.5.1
+KPROMO_VER := v4.0.5
 KPROMO_BIN := kpromo
 KPROMO :=  $(TOOLS_BIN_DIR)/$(KPROMO_BIN)-$(KPROMO_VER)
 
-CONVERSION_GEN_VER := v0.27.3
+CONVERSION_GEN_VER := v0.29.2
 CONVERSION_GEN_BIN := conversion-gen
 CONVERSION_GEN := $(TOOLS_BIN_DIR)/$(CONVERSION_GEN_BIN)-$(CONVERSION_GEN_VER)
 
-CONVERSION_VERIFIER_VER := v1.5.0
+CONVERSION_VERIFIER_VER := v1.7.0
 CONVERSION_VERIFIER_BIN := conversion-verifier
 CONVERSION_VERIFIER := $(TOOLS_BIN_DIR)/$(CONVERSION_VERIFIER_BIN)-$(CONVERSION_VERIFIER_VER)
 
@@ -140,7 +140,7 @@ CONTROLLER_IMG_TAG ?= $(CONTROLLER_IMG)-$(ARCH):$(TAG)
 LDFLAGS := $(shell $(ROOT)/hack/version.sh)
 
 # Default cert-manager version
-CERT_MANAGER_VERSION ?= v1.12.2
+CERT_MANAGER_VERSION ?= v1.14.5
 
 # E2E configuration
 GINKGO_NOCOLOR ?= false
@@ -156,6 +156,10 @@ E2E_OPERATOR_IMAGE ?= $(CONTROLLER_IMG):$(TAG)
 # Relase
 RELEASE_TAG ?= $(shell git describe --abbrev=0 2>/dev/null)
 HELM_CHART_TAG := $(shell echo $(RELEASE_TAG) | cut -c 2-)
+ifeq ($(HELM_CHART_TAG),)
+	HELM_CHART_TAG := v0.0.1-test
+	RELEASE_TAG := v0.0.1-test
+endif
 RELEASE_ALIAS_TAG ?= $(PULL_BASE_REF)
 RELEASE_DIR := $(ROOT)/out
 CHART_DIR := $(RELEASE_DIR)/charts/cluster-api-operator
@@ -229,7 +233,7 @@ $(YQ):
 	GOBIN=$(TOOLS_BIN_DIR) $(GO_INSTALL) github.com/mikefarah/yq/v4 $(YQ_BIN) ${YQ_VER}
 
 $(KPROMO):
-	GOBIN=$(TOOLS_BIN_DIR) $(GO_INSTALL) sigs.k8s.io/promo-tools/v3/cmd/kpromo $(KPROMO_BIN) ${KPROMO_VER}
+	GOBIN=$(TOOLS_BIN_DIR) $(GO_INSTALL) sigs.k8s.io/promo-tools/v4/cmd/kpromo $(KPROMO_BIN) ${KPROMO_VER}
 
 $(CONVERSION_GEN):
 	GOBIN=$(TOOLS_BIN_DIR) $(GO_INSTALL) k8s.io/code-generator/cmd/conversion-gen $(CONVERSION_GEN_BIN) ${CONVERSION_GEN_VER}
@@ -331,6 +335,7 @@ generate-go: $(CONTROLLER_GEN) ## Runs Go related generate targets for the opera
 .PHONY: generate-manifests
 generate-manifests: $(CONTROLLER_GEN) ## Generate manifests for the operator e.g. CRD, RBAC etc.
 	$(CONTROLLER_GEN) \
+		paths=./cmd \
 		paths=./api/... \
 		paths=./internal/controller/... \
 		paths=./internal/webhook/... \
@@ -475,7 +480,6 @@ release-manifests: $(KUSTOMIZE) $(RELEASE_DIR) ## Builds the manifests to publis
 release-chart: $(HELM) $(KUSTOMIZE) $(RELEASE_DIR) $(CHART_DIR) $(CHART_PACKAGE_DIR) ## Builds the chart to publish with a release
 	cp -rf $(ROOT)/hack/charts/cluster-api-operator/. $(CHART_DIR)
 	$(KUSTOMIZE) build ./config/chart > $(CHART_DIR)/templates/operator-components.yaml
-	$(ROOT)/hack/inject-cert-manager-helm.sh $(CERT_MANAGER_VERSION)
 	$(HELM) package $(CHART_DIR) --app-version=$(HELM_CHART_TAG) --version=$(HELM_CHART_TAG) --destination=$(CHART_PACKAGE_DIR)
 
 .PHONY: release-staging
@@ -494,13 +498,15 @@ release-alias-tag: # Adds the tag to the last build tag.
 upload-staging-artifacts: ## Upload release artifacts to the staging bucket
 	gsutil cp $(RELEASE_DIR)/* gs://$(STAGING_BUCKET)/components/$(RELEASE_ALIAS_TAG)/
 
-.PHONY: update-helm-repo
-update-helm-repo:
+.PHONY: update-helm-plugin-repo
+update-helm-plugin-repo:
+	./hack/update-plugin-yaml.sh $(RELEASE_TAG)
 	./hack/update-helm-repo.sh $(RELEASE_TAG)
+	./hack/publish-index-changes.sh $(RELEASE_TAG)
 
 .PHONY: promote-images
 promote-images: $(KPROMO)
-	$(KPROMO) pr --project capi-operator --tag $(RELEASE_TAG) --reviewers "$(IMAGE_REVIEWERS)" --fork $(USER_FORK) --image cluster-api-operator
+	$(KPROMO) pr --project capi-operator --tag $(RELEASE_TAG) --reviewers "$(IMAGE_REVIEWERS)" --fork $(USER_FORK) --image cluster-api-operator --use-ssh=false
 
 ## --------------------------------------
 ## Cleanup / Verification
@@ -545,3 +551,6 @@ test-e2e-run: $(GINKGO) $(ENVSUBST) $(HELM) ## Run e2e tests
 		-e2e.config="$(E2E_CONF_FILE_ENVSUBST)"  -e2e.components=$(RELEASE_DIR)/operator-components.yaml \
 		-e2e.skip-resource-cleanup=$(SKIP_CLEANUP) -e2e.use-existing-cluster=$(SKIP_CREATE_MGMT_CLUSTER) \
 		-e2e.helm-binary-path=$(HELM) -e2e.chart-path=$(CHART_PACKAGE_DIR)/cluster-api-operator-$(HELM_CHART_TAG).tgz $(E2E_ARGS)
+
+go-version: ## Print the go version we use to compile our binaries and images
+	@echo $(GO_VERSION)
