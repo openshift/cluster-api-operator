@@ -34,7 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/klog/v2"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta1"
@@ -173,7 +173,7 @@ func AddScaleUpDeploymentAndWait(ctx context.Context, input AddScaleUpDeployment
 			},
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: pointer.Int32(int32(replicas)),
+			Replicas: ptr.To[int32](int32(replicas)),
 			Selector: &metav1.LabelSelector{
 				MatchLabels: map[string]string{
 					"app": "scale-up",
@@ -220,11 +220,13 @@ type ProcessYAMLInput struct {
 }
 
 func ProcessYAML(input *ProcessYAMLInput) ([]byte, error) {
+	ctx := context.Background()
+
 	for n, v := range input.Env {
 		_ = os.Setenv(n, v)
 	}
 
-	c, err := clusterctlclient.New(input.ClusterctlConfigPath)
+	c, err := clusterctlclient.New(ctx, input.ClusterctlConfigPath)
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +236,7 @@ func ProcessYAML(input *ProcessYAMLInput) ([]byte, error) {
 		},
 	}
 
-	printer, err := c.ProcessYAML(options)
+	printer, err := c.ProcessYAML(ctx, options)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +277,7 @@ func DisableAutoscalerForMachineDeploymentTopologyAndWait(ctx context.Context, i
 
 	log.Logf("Dropping the %s and %s annotations from the MachineDeployments in ClusterTopology", clusterv1.AutoscalerMinSizeAnnotation, clusterv1.AutoscalerMaxSizeAnnotation)
 	patchHelper, err := patch.NewHelper(input.Cluster, mgmtClient)
-	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("failed to create patch helper for Cluster %s", klog.KObj(input.Cluster)))
+	Expect(err).ToNot(HaveOccurred())
 	for i := range input.Cluster.Spec.Topology.Workers.MachineDeployments {
 		md := input.Cluster.Spec.Topology.Workers.MachineDeployments[i]
 		delete(md.Metadata.Annotations, clusterv1.AutoscalerMinSizeAnnotation)
@@ -319,7 +321,7 @@ func EnableAutoscalerForMachineDeploymentTopologyAndWait(ctx context.Context, in
 
 	log.Logf("Add the %s and %s annotations to the MachineDeployments in ClusterTopology", clusterv1.AutoscalerMinSizeAnnotation, clusterv1.AutoscalerMaxSizeAnnotation)
 	patchHelper, err := patch.NewHelper(input.Cluster, mgmtClient)
-	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("failed to create patch helper for Cluster %s", klog.KObj(input.Cluster)))
+	Expect(err).ToNot(HaveOccurred())
 	for i := range input.Cluster.Spec.Topology.Workers.MachineDeployments {
 		md := input.Cluster.Spec.Topology.Workers.MachineDeployments[i]
 		if md.Metadata.Annotations == nil {
@@ -372,7 +374,7 @@ func getAuthenticationTokenForAutoscaler(ctx context.Context, managementClusterP
 			{
 				Verbs:     []string{"get", "list", "update", "watch"},
 				APIGroups: []string{"cluster.x-k8s.io"},
-				Resources: []string{"machinedeployments", "machinedeployments/scale", "machines", "machinesets"},
+				Resources: []string{"machinedeployments", "machinedeployments/scale", "machinepools", "machinepools/scale", "machines", "machinesets"},
 			},
 			{
 				Verbs:     []string{"get", "list"},
@@ -406,7 +408,7 @@ func getAuthenticationTokenForAutoscaler(ctx context.Context, managementClusterP
 
 	tokenRequest := &authenticationv1.TokenRequest{
 		Spec: authenticationv1.TokenRequestSpec{
-			ExpirationSeconds: pointer.Int64(2 * 60 * 60), // 2 hours.
+			ExpirationSeconds: ptr.To[int64](2 * 60 * 60), // 2 hours.
 		},
 	}
 	tokenRequest, err := managementClusterProxy.GetClientSet().CoreV1().ServiceAccounts(namespace).CreateToken(ctx, name, tokenRequest, metav1.CreateOptions{})

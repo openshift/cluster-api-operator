@@ -69,6 +69,11 @@ data:
 					AdditionalManifestsRef: &operatorv1.ConfigmapReference{
 						Name: additionalManifests.Name,
 					},
+					ManifestPatches: []string{`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    test-label: test-value`},
 				},
 			},
 		}
@@ -83,6 +88,15 @@ data:
 			Deployment: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: coreProviderDeploymentName, Namespace: operatorNamespace}},
 		}, e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
 
+		By("Checking for deployment to have additional labels")
+		deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: coreProviderDeploymentName, Namespace: operatorNamespace}}
+		WaitFor(ctx, For(deployment).In(bootstrapCluster).ToSatisfy(func() bool {
+			if v, ok := deployment.Labels["test-label"]; ok {
+				return v == "test-value"
+			}
+			return false
+		}), e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
+
 		By("Waiting for core provider to be ready")
 		WaitFor(ctx, For(coreProvider).In(bootstrapCluster).ToSatisfy(
 			HaveStatusCondition(&coreProvider.Status.Conditions, operatorv1.ProviderInstalledCondition)),
@@ -94,10 +108,11 @@ data:
 		}), e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
 
 		By("Checking if additional manifests are applied")
-		cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-config-map",
-			Namespace: operatorNamespace,
-		}}
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-config-map",
+				Namespace: operatorNamespace,
+			}}
 		WaitFor(ctx, For(cm).In(bootstrapCluster).ToSatisfy(func() bool {
 			value, ok := cm.Data["test"]
 			return ok && value == "test"
@@ -212,10 +227,17 @@ data:
 
 	It("should successfully create and delete an AddonProvider", func() {
 		bootstrapCluster := bootstrapClusterProxy.GetClient()
-		addonProvider := &operatorv1.AddonProvider{ObjectMeta: metav1.ObjectMeta{
-			Name:      addonProviderName,
-			Namespace: operatorNamespace,
-		}}
+		addonProvider := &operatorv1.AddonProvider{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      addonProviderName,
+				Namespace: operatorNamespace,
+			},
+			Spec: operatorv1.AddonProviderSpec{
+				ProviderSpec: operatorv1.ProviderSpec{
+					Version: "v0.1.0-alpha.10", // Remove to use latest when helm provider is stabilized
+				},
+			},
+		}
 		deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
 			Name:      addonProviderDeploymentName,
 			Namespace: operatorNamespace,
@@ -245,34 +267,51 @@ data:
 			e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
 	})
 
-	It("should successfully downgrade a CoreProvider (latest -> v1.4.2)", func() {
+	PIt("should successfully create and delete an IPAMProvider", func() {
 		bootstrapCluster := bootstrapClusterProxy.GetClient()
-		coreProvider := &operatorv1.CoreProvider{}
-		key := client.ObjectKey{Namespace: operatorNamespace, Name: coreProviderName}
-		Expect(bootstrapCluster.Get(ctx, key, coreProvider)).To(Succeed())
+		ipamProvider := &operatorv1.IPAMProvider{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      ipamProviderName,
+				Namespace: operatorNamespace,
+			},
+			Spec: operatorv1.IPAMProviderSpec{
+				ProviderSpec: operatorv1.ProviderSpec{
+					FetchConfig: &operatorv1.FetchConfiguration{
+						URL: ipamProviderURL,
+					},
+				},
+			},
+		}
+		deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{
+			Name:      ipamProviderDeploymentName,
+			Namespace: operatorNamespace,
+		}}
+		Expect(bootstrapCluster.Create(ctx, ipamProvider)).To(Succeed())
 
-		coreProvider.Spec.Version = previousCAPIVersion
-
-		Expect(bootstrapCluster.Update(ctx, coreProvider)).To(Succeed())
-
-		By("Waiting for the core provider deployment to be ready")
+		By("Waiting for the ipam provider deployment to be ready")
 		framework.WaitForDeploymentsAvailable(ctx, framework.WaitForDeploymentsAvailableInput{
 			Getter:     bootstrapCluster,
-			Deployment: &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: coreProviderDeploymentName, Namespace: operatorNamespace}},
+			Deployment: deployment,
 		}, e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
 
-		By("Waiting for core provider to be ready and status.InstalledVersion to be set")
-		WaitFor(ctx, For(coreProvider).In(bootstrapCluster).ToSatisfy(
-			HaveStatusCondition(&coreProvider.Status.Conditions, operatorv1.ProviderInstalledCondition)),
+		By("Waiting for the ipam provider to be ready")
+		WaitFor(ctx, For(ipamProvider).In(bootstrapCluster).ToSatisfy(
+			HaveStatusCondition(&ipamProvider.Status.Conditions, operatorv1.ProviderInstalledCondition)),
 			e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
 
-		By("Waiting for the core provider to have status.InstalledVersion to be set")
-		WaitFor(ctx, For(coreProvider).In(bootstrapCluster).ToSatisfy(func() bool {
-			return ptr.Equal(coreProvider.Status.InstalledVersion, &coreProvider.Spec.Version)
+		By("Waiting for status.IntalledVersion to be set")
+		WaitFor(ctx, For(ipamProvider).In(bootstrapCluster).ToSatisfy(func() bool {
+			return ptr.Equal(ipamProvider.Status.InstalledVersion, &ipamProvider.Spec.Version)
 		}), e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
+
+		Expect(bootstrapCluster.Delete(ctx, ipamProvider)).To(Succeed())
+
+		By("Waiting for the ipam provider deployment to be deleted")
+		WaitForDelete(ctx, For(deployment).In(bootstrapCluster),
+			e2eConfig.GetIntervals(bootstrapClusterProxy.GetName(), "wait-controllers")...)
 	})
 
-	It("should successfully upgrade a CoreProvider (v1.4.2 -> latest)", func() {
+	It("should successfully upgrade a CoreProvider (v1.5.4 -> latest)", func() {
 		bootstrapCluster := bootstrapClusterProxy.GetClient()
 		coreProvider := &operatorv1.CoreProvider{ObjectMeta: metav1.ObjectMeta{
 			Name:      coreProviderName,

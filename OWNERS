@@ -6,14 +6,24 @@ approvers:
 - RadekManak
 - damdo
 - nrb
+- jnpacker
+- serngawy
+- marek-veber
+- mzazrivec
+- PanSpagetka
 reviewers:
 - JoelSpeed
 - RadekManak
 - damdo
 - elmiko
 - nrb
+- jnpacker
+- serngawy
+- marek-veber
+- mzazrivec
 - racheljpg
+- PanSpagetka
 - sub-mod
 - theobarberbany
 component: Cloud Compute
-subcomponent: Other Provider
+subcomponent: Cluster API Providers

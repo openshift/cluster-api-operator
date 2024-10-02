@@ -28,9 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/client-go/kubernetes/scheme"
 	configv1alpha1 "k8s.io/component-base/config/v1alpha1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 	operatorv1 "sigs.k8s.io/cluster-api-operator/api/v1alpha2"
-	"sigs.k8s.io/cluster-api-operator/internal/controller/genericprovider"
 	"sigs.k8s.io/cluster-api/util"
 )
 
@@ -44,9 +43,11 @@ const (
 var bool2Str = map[bool]string{true: "true", false: "false"}
 
 // customizeObjectsFn apply provider specific customization to a list of manifests.
-func customizeObjectsFn(provider genericprovider.GenericProvider) func(objs []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
+func customizeObjectsFn(provider operatorv1.GenericProvider) func(objs []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
 	return func(objs []unstructured.Unstructured) ([]unstructured.Unstructured, error) {
 		results := []unstructured.Unstructured{}
+
+		isMultipleDeployments := isMultipleDeployments(objs)
 
 		for i := range objs {
 			o := objs[i]
@@ -58,7 +59,12 @@ func customizeObjectsFn(provider genericprovider.GenericProvider) func(objs []un
 
 			if o.GetNamespace() != "" {
 				// only set the ownership on namespaced objects.
-				o.SetOwnerReferences(util.EnsureOwnerRef(provider.GetOwnerReferences(),
+				ownerReferences := o.GetOwnerReferences()
+				if ownerReferences == nil {
+					ownerReferences = []metav1.OwnerReference{}
+				}
+
+				o.SetOwnerReferences(util.EnsureOwnerRef(ownerReferences,
 					metav1.OwnerReference{
 						APIVersion: operatorv1.GroupVersion.String(),
 						Kind:       provider.GetObjectKind().GroupVersionKind().Kind,
@@ -67,13 +73,41 @@ func customizeObjectsFn(provider genericprovider.GenericProvider) func(objs []un
 					}))
 			}
 
+			//nolint:nestif
 			if o.GetKind() == deploymentKind {
 				d := &appsv1.Deployment{}
 				if err := scheme.Scheme.Convert(&o, d, nil); err != nil {
 					return nil, err
 				}
 
-				if err := customizeDeployment(provider.GetSpec(), d); err != nil {
+				providerDeployment := provider.GetSpec().Deployment
+				providerManager := provider.GetSpec().Manager
+
+				// If there are multiple deployments, check if we specify customizations for those deployments.
+				// We need to skip the deployment customization if there are several deployments available
+				// and the deployment name doesn't follow "ca*-controller-manager" pattern, or the provider
+				// doesn't specify customizations for the deployment.
+				// This is a temporary fix until CAPI provides a contract to distinguish provider deployments.
+				// TODO: replace this check and just compare labels when CAPI provides the contract for that.
+				if isMultipleDeployments && !isProviderManagerDeploymentName(o.GetName()) {
+					additionalDeployments := provider.GetSpec().AdditionalDeployments
+					// Skip the deployment if there are no additional deployments specified.
+					if additionalDeployments == nil {
+						results = append(results, o)
+						continue
+					}
+
+					additionalProviderCustomization, ok := additionalDeployments[o.GetName()]
+					if !ok {
+						results = append(results, o)
+						continue
+					}
+
+					providerDeployment = additionalProviderCustomization.Deployment
+					providerManager = additionalProviderCustomization.Manager
+				}
+
+				if err := customizeDeployment(providerDeployment, providerManager, d); err != nil {
 					return nil, err
 				}
 
@@ -90,30 +124,28 @@ func customizeObjectsFn(provider genericprovider.GenericProvider) func(objs []un
 }
 
 // customizeDeployment customize provider deployment base on provider spec input.
-func customizeDeployment(pSpec operatorv1.ProviderSpec, d *appsv1.Deployment) error {
+func customizeDeployment(dSpec *operatorv1.DeploymentSpec, mSpec *operatorv1.ManagerSpec, d *appsv1.Deployment) error {
 	// Customize deployment spec first.
-	if pSpec.Deployment != nil {
-		customizeDeploymentSpec(pSpec, d)
+	if dSpec != nil {
+		customizeDeploymentSpec(*dSpec, d)
 	}
 
-	// Run the customizeManagerContainer after so it overrides anything in the deploymentSpec.
-	if pSpec.Manager != nil {
+	// Run the customizeManagerContainer after, so it overrides anything in the deploymentSpec.
+	if mSpec != nil {
 		container := findManagerContainer(&d.Spec)
 		if container == nil {
 			return fmt.Errorf("cannot find %q container in deployment %q", managerContainerName, d.Name)
 		}
 
-		customizeManagerContainer(pSpec.Manager, container)
+		customizeManagerContainer(mSpec, container)
 	}
 
 	return nil
 }
 
-func customizeDeploymentSpec(pSpec operatorv1.ProviderSpec, d *appsv1.Deployment) {
-	dSpec := pSpec.Deployment
-
+func customizeDeploymentSpec(dSpec operatorv1.DeploymentSpec, d *appsv1.Deployment) {
 	if dSpec.Replicas != nil {
-		d.Spec.Replicas = pointer.Int32(int32(*dSpec.Replicas))
+		d.Spec.Replicas = ptr.To(int32(*dSpec.Replicas))
 	}
 
 	if dSpec.Affinity != nil {
@@ -325,4 +357,24 @@ func leaderElectionArgs(lec *configv1alpha1.LeaderElectionConfiguration, args []
 	}
 
 	return args
+}
+
+// isMultipleDeployments check if there are multiple deployments in the manifests.
+func isMultipleDeployments(objs []unstructured.Unstructured) bool {
+	var numberOfDeployments int
+
+	for i := range objs {
+		o := objs[i]
+
+		if o.GetKind() == deploymentKind {
+			numberOfDeployments++
+		}
+	}
+
+	return numberOfDeployments > 1
+}
+
+// isProviderManagerDeploymentName checks that the provided follows the provider manager deployment name pattern: "ca*-controller-manager".
+func isProviderManagerDeploymentName(name string) bool {
+	return strings.HasPrefix(name, "ca") && strings.HasSuffix(name, "-controller-manager")
 }

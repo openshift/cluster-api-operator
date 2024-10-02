@@ -17,19 +17,39 @@ limitations under the License.
 package util
 
 import (
+	"context"
+	"fmt"
+	"net/url"
+	"strings"
+
 	operatorv1 "sigs.k8s.io/cluster-api-operator/api/v1alpha2"
 	"sigs.k8s.io/cluster-api-operator/internal/controller/genericprovider"
 	clusterctlv1 "sigs.k8s.io/cluster-api/cmd/clusterctl/api/v1alpha3"
+	configclient "sigs.k8s.io/cluster-api/cmd/clusterctl/client/config"
+	"sigs.k8s.io/cluster-api/cmd/clusterctl/client/repository"
+	ctrlclient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+const (
+	httpsScheme             = "https"
+	githubDomain            = "github.com"
+	gitlabHostPrefix        = "gitlab."
+	gitlabPackagesAPIPrefix = "/api/v4/projects/"
+)
+
+type genericProviderList interface {
+	ctrlclient.ObjectList
+	operatorv1.GenericProviderList
+}
+
 func IsCoreProvider(p genericprovider.GenericProvider) bool {
-	_, ok := p.GetObject().(*operatorv1.CoreProvider)
+	_, ok := p.(*operatorv1.CoreProvider)
 	return ok
 }
 
 // ClusterctlProviderType returns the provider type from the genericProvider.
-func ClusterctlProviderType(genericProvider genericprovider.GenericProvider) clusterctlv1.ProviderType {
-	switch genericProvider.GetObject().(type) {
+func ClusterctlProviderType(genericProvider operatorv1.GenericProvider) clusterctlv1.ProviderType {
+	switch genericProvider.(type) {
 	case *operatorv1.CoreProvider:
 		return clusterctlv1.CoreProviderType
 	case *operatorv1.ControlPlaneProvider:
@@ -40,7 +60,83 @@ func ClusterctlProviderType(genericProvider genericprovider.GenericProvider) clu
 		return clusterctlv1.BootstrapProviderType
 	case *operatorv1.AddonProvider:
 		return clusterctlv1.AddonProviderType
+	case *operatorv1.IPAMProvider:
+		return clusterctlv1.IPAMProviderType
+	case *operatorv1.RuntimeExtensionProvider:
+		return clusterctlv1.RuntimeExtensionProviderType
 	}
 
 	return clusterctlv1.ProviderTypeUnknown
+}
+
+// GetGenericProvider returns the first of generic providers matching the type and the name from the configclient.Provider.
+func GetGenericProvider(ctx context.Context, cl ctrlclient.Client, provider configclient.Provider) (operatorv1.GenericProvider, error) {
+	var list genericProviderList
+
+	switch provider.Type() {
+	case clusterctlv1.CoreProviderType:
+		list = &operatorv1.CoreProviderList{}
+	case clusterctlv1.ControlPlaneProviderType:
+		list = &operatorv1.ControlPlaneProviderList{}
+	case clusterctlv1.InfrastructureProviderType:
+		list = &operatorv1.InfrastructureProviderList{}
+	case clusterctlv1.BootstrapProviderType:
+		list = &operatorv1.BootstrapProviderList{}
+	case clusterctlv1.AddonProviderType:
+		list = &operatorv1.AddonProviderList{}
+	case clusterctlv1.IPAMProviderType:
+		list = &operatorv1.IPAMProviderList{}
+	case clusterctlv1.RuntimeExtensionProviderType:
+		list = &operatorv1.RuntimeExtensionProviderList{}
+	case clusterctlv1.ProviderTypeUnknown:
+		return nil, fmt.Errorf("provider %s type is not supported %s", provider.Name(), provider.Type())
+	}
+
+	if err := cl.List(ctx, list); err != nil {
+		return nil, err
+	}
+
+	for _, p := range list.GetItems() {
+		if p.GetName() == provider.Name() {
+			return p, nil
+		}
+	}
+
+	return nil, fmt.Errorf("unable to find provider manifest with name %s", provider.Name())
+}
+
+// RepositoryFactory returns the repository implementation corresponding to the provider URL.
+// inspired by https://github.com/kubernetes-sigs/cluster-api/blob/124d9be7035e492f027cdc7a701b6b179451190a/cmd/clusterctl/client/repository/client.go#L170
+func RepositoryFactory(ctx context.Context, providerConfig configclient.Provider, configVariablesClient configclient.VariablesClient) (repository.Repository, error) {
+	// parse the repository url
+	rURL, err := url.Parse(providerConfig.URL())
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse repository url %q", providerConfig.URL())
+	}
+
+	if rURL.Scheme != httpsScheme {
+		return nil, fmt.Errorf("invalid provider url. there are no provider implementation for %q schema", rURL.Scheme)
+	}
+
+	// if the url is a GitHub repository
+	if rURL.Host == githubDomain {
+		repo, err := repository.NewGitHubRepository(ctx, providerConfig, configVariablesClient)
+		if err != nil {
+			return nil, fmt.Errorf("error creating the GitHub repository client: %w", err)
+		}
+
+		return repo, err
+	}
+
+	// if the url is a GitLab repository
+	if strings.HasPrefix(rURL.Host, gitlabHostPrefix) && strings.HasPrefix(rURL.Path, gitlabPackagesAPIPrefix) {
+		repo, err := repository.NewGitLabRepository(providerConfig, configVariablesClient)
+		if err != nil {
+			return nil, fmt.Errorf("error creating the GitLab repository client: %w", err)
+		}
+
+		return repo, err
+	}
+
+	return nil, fmt.Errorf("invalid provider url. Only GitHub and GitLab are supported for %q schema", rURL.Scheme)
 }

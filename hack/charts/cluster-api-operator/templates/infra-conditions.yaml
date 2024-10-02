@@ -1,34 +1,6 @@
 {{- if .Values.infrastructure }}
 
-# Deploy core, bootstrap, and infrastructure components if not specified
-{{- if not .Values.core }}
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  annotations:
-    "helm.sh/hook": "post-install"
-    "helm.sh/hook-weight": "1"
-  name: capi-system
----
-apiVersion: operator.cluster.x-k8s.io/v1alpha2
-kind: CoreProvider
-metadata:
-  name: cluster-api
-  namespace: capi-system
-  annotations:
-    "helm.sh/hook": "post-install"
-    "helm.sh/hook-weight": "2"
-{{- with .Values.configSecret }}
-spec:
-  configSecret:
-    name: {{ .name }}
-    {{- if .namespace }}
-    namespace: {{ .namespace }}
-    {{- end }}
-{{- end }}
-{{- end }}
-
+# Deploy bootstrap, and infrastructure components if not specified
 {{- if not .Values.bootstrap }}
 ---
 apiVersion: v1
@@ -37,6 +9,7 @@ metadata:
   annotations:
     "helm.sh/hook": "post-install"
     "helm.sh/hook-weight": "1"
+    "argocd.argoproj.io/sync-wave": "1"
   name: capi-kubeadm-bootstrap-system
 ---
 apiVersion: operator.cluster.x-k8s.io/v1alpha2
@@ -47,6 +20,7 @@ metadata:
   annotations:
     "helm.sh/hook": "post-install"
     "helm.sh/hook-weight": "2"
+    "argocd.argoproj.io/sync-wave": "2"
 {{- with .Values.configSecret }}
 spec:
   configSecret:
@@ -65,6 +39,7 @@ metadata:
   annotations:
     "helm.sh/hook": "post-install"
     "helm.sh/hook-weight": "1"
+    "argocd.argoproj.io/sync-wave": "1"
   name: capi-kubeadm-control-plane-system
 ---
 apiVersion: operator.cluster.x-k8s.io/v1alpha2
@@ -75,6 +50,7 @@ metadata:
   annotations:
     "helm.sh/hook": "post-install"
     "helm.sh/hook-weight": "2"
+    "argocd.argoproj.io/sync-wave": "2"
 {{- with .Values.configSecret }}
 spec:
   configSecret:

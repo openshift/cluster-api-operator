@@ -26,9 +26,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes/scheme"
 	configv1alpha1 "k8s.io/component-base/config/v1alpha1"
-	"k8s.io/utils/pointer"
+	"k8s.io/utils/ptr"
 
 	operatorv1 "sigs.k8s.io/cluster-api-operator/api/v1alpha2"
 )
@@ -110,11 +112,11 @@ func TestCustomizeDeployment(t *testing.T) {
 		{
 			name: "only replicas modified",
 			inputDeploymentSpec: &operatorv1.DeploymentSpec{
-				Replicas: pointer.Int(3),
+				Replicas: ptr.To(3),
 			},
 			expectedDeploymentSpec: func(inputDS *appsv1.DeploymentSpec) (*appsv1.DeploymentSpec, bool) {
 				expectedDS := &appsv1.DeploymentSpec{
-					Replicas: pointer.Int32(3),
+					Replicas: ptr.To(int32(3)),
 				}
 
 				return expectedDS, reflect.DeepEqual(inputDS.Replicas, expectedDS.Replicas)
@@ -249,7 +251,7 @@ func TestCustomizeDeployment(t *testing.T) {
 				Containers: []operatorv1.ContainerSpec{
 					{
 						Name:     "manager",
-						ImageURL: pointer.String("quay.io/dev/mydns:v3.4.2"),
+						ImageURL: ptr.To("quay.io/dev/mydns:v3.4.2"),
 						Env: []corev1.EnvVar{
 							{
 								Name:  "test1",
@@ -322,7 +324,7 @@ func TestCustomizeDeployment(t *testing.T) {
 		{
 			name: "all deployment options",
 			inputDeploymentSpec: &operatorv1.DeploymentSpec{
-				Replicas:     pointer.Int(3),
+				Replicas:     ptr.To(3),
 				NodeSelector: map[string]string{"a": "b"},
 				Tolerations: []corev1.Toleration{
 					{
@@ -349,7 +351,7 @@ func TestCustomizeDeployment(t *testing.T) {
 				Containers: []operatorv1.ContainerSpec{
 					{
 						Name:     "manager",
-						ImageURL: pointer.String("quay.io/dev/mydns:v3.4.2"),
+						ImageURL: ptr.To("quay.io/dev/mydns:v3.4.2"),
 						Env: []corev1.EnvVar{
 							{
 								Name:  "test1",
@@ -373,7 +375,7 @@ func TestCustomizeDeployment(t *testing.T) {
 			},
 			expectedDeploymentSpec: func(inputDS *appsv1.DeploymentSpec) (*appsv1.DeploymentSpec, bool) {
 				expectedDS := &appsv1.DeploymentSpec{
-					Replicas: pointer.Int32(3),
+					Replicas: ptr.To(int32(3)),
 					Template: corev1.PodTemplateSpec{
 						Spec: corev1.PodSpec{
 							NodeSelector: map[string]string{"a": "b"},
@@ -478,11 +480,11 @@ func TestCustomizeDeployment(t *testing.T) {
 						LivenessEndpointName:   "mostly",
 					},
 					Webhook: operatorv1.ControllerWebhook{
-						Port:    pointer.Int(3579),
+						Port:    ptr.To(3579),
 						CertDir: "/tmp/certs",
 					},
 					LeaderElection: &configv1alpha1.LeaderElectionConfiguration{
-						LeaderElect:       pointer.Bool(true),
+						LeaderElect:       ptr.To(true),
 						ResourceName:      "foo",
 						ResourceNamespace: "here",
 						LeaseDuration:     metav1.Duration{Duration: sevenHours},
@@ -555,15 +557,150 @@ func TestCustomizeDeployment(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			deployment := managerDepl.DeepCopy()
-			if err := customizeDeployment(operatorv1.ProviderSpec{
-				Deployment: tc.inputDeploymentSpec,
-				Manager:    tc.inputManagerSpec,
-			}, deployment); err != nil {
+			if err := customizeDeployment(tc.inputDeploymentSpec, tc.inputManagerSpec, deployment); err != nil {
 				t.Error(err)
 			}
 
 			if ds, expected := tc.expectedDeploymentSpec(&deployment.Spec); !expected {
 				t.Error(cmp.Diff(ds, deployment.Spec))
+			}
+		})
+	}
+}
+
+func TestCustomizeMultipleDeployment(t *testing.T) {
+	tests := []struct {
+		name                     string
+		nonManagerDeploymentName string
+		shouldCustomize          bool
+	}{
+		{
+			name:                     "name without suffix and prefix",
+			nonManagerDeploymentName: "non-manager",
+		},
+		{
+			name:                     "name with prefix",
+			nonManagerDeploymentName: "ca-non-manager",
+		},
+		{
+			name:                     "name with suffix",
+			nonManagerDeploymentName: "non-manager-controller-manager",
+		},
+		{
+			name:                     "name with azureserviceoperator controller-manager",
+			nonManagerDeploymentName: "azureserviceoperator-controller-manager",
+			shouldCustomize:          true,
+		},
+		{
+			name:                     "empty name",
+			nonManagerDeploymentName: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			managerDepl := &appsv1.Deployment{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "cap-controller-manager",
+					Namespace: metav1.NamespaceSystem,
+				},
+				Spec: appsv1.DeploymentSpec{
+					Replicas: ptr.To(int32(3)),
+					Template: corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{
+							Containers: []corev1.Container{
+								{
+									Name:  "manager",
+									Image: "registry.k8s.io/a-manager:1.6.2",
+									Args:  []string{},
+								},
+							},
+						},
+					},
+				},
+			}
+
+			nonManagerDepl := managerDepl.DeepCopy()
+			nonManagerDepl.Name = tc.nonManagerDeploymentName
+
+			var managerDeplRaw, nonManagerDeplRaw unstructured.Unstructured
+
+			if err := scheme.Scheme.Convert(managerDepl, &managerDeplRaw, nil); err != nil {
+				t.Error(err)
+			}
+
+			if err := scheme.Scheme.Convert(nonManagerDepl, &nonManagerDeplRaw, nil); err != nil {
+				t.Error(err)
+			}
+
+			objs := []unstructured.Unstructured{managerDeplRaw, nonManagerDeplRaw}
+
+			// We want to customize the manager deployment and leave the non-manager deployment alone.
+			// Replicas number will be set to 10 for the manager deployment and 3 for the non-manager deployment.
+			provider := operatorv1.CoreProvider{
+				Spec: operatorv1.CoreProviderSpec{
+					ProviderSpec: operatorv1.ProviderSpec{
+						Deployment: &operatorv1.DeploymentSpec{
+							Replicas: ptr.To(10),
+						},
+						AdditionalDeployments: map[string]operatorv1.AdditionalDeployments{
+							"azureserviceoperator-controller-manager": {
+								Deployment: &operatorv1.DeploymentSpec{
+									Containers: []operatorv1.ContainerSpec{
+										{
+											Name: "manager",
+											Args: map[string]string{
+												"--crd-pattern": ".*",
+											},
+										},
+									},
+								},
+								Manager: &operatorv1.ManagerSpec{
+									Verbosity: 1,
+								},
+							},
+						},
+					},
+				},
+			}
+
+			customizationFunc := customizeObjectsFn(&provider)
+
+			objs, err := customizationFunc(objs)
+			if err != nil {
+				t.Error(err)
+			}
+
+			if len(objs) != 2 {
+				t.Errorf("expected 2 objects, got %d", len(objs))
+			}
+
+			if err := scheme.Scheme.Convert(&objs[0], managerDepl, nil); err != nil {
+				t.Error(err)
+			}
+
+			if err := scheme.Scheme.Convert(&objs[1], nonManagerDepl, nil); err != nil {
+				t.Error(err)
+			}
+
+			// manager deployment should have been customized
+			if *managerDepl.Spec.Replicas != 10 {
+				t.Errorf("expected 10 replicas, got %d", *managerDepl.Spec.Replicas)
+			}
+
+			if tc.shouldCustomize {
+				// non-manager container should have been customized
+				container := findManagerContainer(&nonManagerDepl.Spec)
+				if container == nil {
+					t.Error("expected container to be found")
+				} else if container.Args != nil && container.Args[0] != "--crd-pattern=.*" {
+					t.Errorf("expected --crd-pattern=.*, got %s", container.Args[0])
+				}
+			}
+
+			// non-manager deployment should not have been customized
+			if *nonManagerDepl.Spec.Replicas != 3 && !tc.shouldCustomize {
+				t.Errorf("expected 3 replicas, got %d", *nonManagerDepl.Spec.Replicas)
 			}
 		})
 	}

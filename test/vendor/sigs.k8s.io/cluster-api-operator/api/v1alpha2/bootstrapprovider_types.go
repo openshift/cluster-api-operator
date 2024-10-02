@@ -31,6 +31,7 @@ type BootstrapProviderStatus struct {
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:resource:path=bootstrapproviders,shortName=cabp,scope=Namespaced
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="InstalledVersion",type="string",JSONPath=".status.installedVersion"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
@@ -55,5 +56,6 @@ type BootstrapProviderList struct {
 }
 
 func init() {
-	SchemeBuilder.Register(&BootstrapProvider{}, &BootstrapProviderList{})
+	ProviderLists = append(ProviderLists, &BootstrapProviderList{})
+	Providers = append(Providers, &BootstrapProvider{})
 }

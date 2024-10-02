@@ -26,10 +26,13 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	operatorv1 "sigs.k8s.io/cluster-api-operator/api/v1alpha2"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+
+	operatorv1 "sigs.k8s.io/cluster-api-operator/api/v1alpha2"
+	"sigs.k8s.io/cluster-api-operator/util"
 )
 
 const (
@@ -63,9 +66,9 @@ func (p *phaseReconciler) downloadManifests(ctx context.Context) (reconcile.Resu
 		MatchLabels: p.prepareConfigMapLabels(),
 	}
 
-	exists, err := p.checkConfigMapExists(ctx, labelSelector)
+	exists, err := p.checkConfigMapExists(ctx, labelSelector, p.provider.GetNamespace())
 	if err != nil {
-		return reconcile.Result{}, wrapPhaseError(err, "failed to check that config map with manifests exists")
+		return reconcile.Result{}, wrapPhaseError(err, "failed to check that config map with manifests exists", operatorv1.ProviderInstalledCondition)
 	}
 
 	if exists {
@@ -76,11 +79,11 @@ func (p *phaseReconciler) downloadManifests(ctx context.Context) (reconcile.Resu
 
 	log.Info("Downloading provider manifests")
 
-	repo, err := repositoryFactory(p.providerConfig, p.configClient.Variables())
+	repo, err := util.RepositoryFactory(ctx, p.providerConfig, p.configClient.Variables())
 	if err != nil {
 		err = fmt.Errorf("failed to create repo from provider url for provider %q: %w", p.provider.GetName(), err)
 
-		return reconcile.Result{}, wrapPhaseError(err, operatorv1.ComponentsFetchErrorReason)
+		return reconcile.Result{}, wrapPhaseError(err, operatorv1.ComponentsFetchErrorReason, operatorv1.ProviderInstalledCondition)
 	}
 
 	spec := p.provider.GetSpec()
@@ -94,18 +97,18 @@ func (p *phaseReconciler) downloadManifests(ctx context.Context) (reconcile.Resu
 	}
 
 	// Fetch the provider metadata and components yaml files from the provided repository GitHub/GitLab.
-	metadataFile, err := repo.GetFile(spec.Version, metadataFile)
+	metadataFile, err := repo.GetFile(ctx, spec.Version, metadataFile)
 	if err != nil {
 		err = fmt.Errorf("failed to read %q from the repository for provider %q: %w", metadataFile, p.provider.GetName(), err)
 
-		return reconcile.Result{}, wrapPhaseError(err, operatorv1.ComponentsFetchErrorReason)
+		return reconcile.Result{}, wrapPhaseError(err, operatorv1.ComponentsFetchErrorReason, operatorv1.ProviderInstalledCondition)
 	}
 
-	componentsFile, err := repo.GetFile(spec.Version, repo.ComponentsPath())
+	componentsFile, err := repo.GetFile(ctx, spec.Version, repo.ComponentsPath())
 	if err != nil {
 		err = fmt.Errorf("failed to read %q from the repository for provider %q: %w", componentsFile, p.provider.GetName(), err)
 
-		return reconcile.Result{}, wrapPhaseError(err, operatorv1.ComponentsFetchErrorReason)
+		return reconcile.Result{}, wrapPhaseError(err, operatorv1.ComponentsFetchErrorReason, operatorv1.ProviderInstalledCondition)
 	}
 
 	withCompression := needToCompress(metadataFile, componentsFile)
@@ -113,17 +116,18 @@ func (p *phaseReconciler) downloadManifests(ctx context.Context) (reconcile.Resu
 	if err := p.createManifestsConfigMap(ctx, metadataFile, componentsFile, withCompression); err != nil {
 		err = fmt.Errorf("failed to create config map for provider %q: %w", p.provider.GetName(), err)
 
-		return reconcile.Result{}, wrapPhaseError(err, operatorv1.ComponentsFetchErrorReason)
+		return reconcile.Result{}, wrapPhaseError(err, operatorv1.ComponentsFetchErrorReason, operatorv1.ProviderInstalledCondition)
 	}
 
 	return reconcile.Result{}, nil
 }
 
 // checkConfigMapExists checks if a config map exists in Kubernetes with the given LabelSelector.
-func (p *phaseReconciler) checkConfigMapExists(ctx context.Context, labelSelector metav1.LabelSelector) (bool, error) {
+func (p *phaseReconciler) checkConfigMapExists(ctx context.Context, labelSelector metav1.LabelSelector, namespace string) (bool, error) {
 	labelSet := labels.Set(labelSelector.MatchLabels)
 	listOpts := []client.ListOption{
 		client.MatchingLabelsSelector{Selector: labels.SelectorFromSet(labelSet)},
+		client.InNamespace(namespace),
 	}
 
 	var configMapList corev1.ConfigMapList
@@ -141,12 +145,7 @@ func (p *phaseReconciler) checkConfigMapExists(ctx context.Context, labelSelecto
 
 // prepareConfigMapLabels returns labels that identify a config map with downloaded manifests.
 func (p *phaseReconciler) prepareConfigMapLabels() map[string]string {
-	return map[string]string{
-		configMapVersionLabel: p.provider.GetSpec().Version,
-		configMapTypeLabel:    p.provider.GetType(),
-		configMapNameLabel:    p.provider.GetName(),
-		operatorManagedLabel:  "true",
-	}
+	return providerLabels(p.provider)
 }
 
 // createManifestsConfigMap creates a config map with downloaded manifests.
@@ -204,6 +203,27 @@ func (p *phaseReconciler) createManifestsConfigMap(ctx context.Context, metadata
 	}
 
 	return nil
+}
+
+func providerLabelSelector(provider operatorv1.GenericProvider) *metav1.LabelSelector {
+	// Replace label selector if user wants to use custom config map
+	if provider.GetSpec().FetchConfig != nil && provider.GetSpec().FetchConfig.Selector != nil {
+		return provider.GetSpec().FetchConfig.Selector
+	}
+
+	return &metav1.LabelSelector{
+		MatchLabels: providerLabels(provider),
+	}
+}
+
+// prepareConfigMapLabels returns default set of labels that identify a config map with downloaded manifests.
+func providerLabels(provider operatorv1.GenericProvider) map[string]string {
+	return map[string]string{
+		configMapVersionLabel: provider.GetSpec().Version,
+		configMapTypeLabel:    provider.GetType(),
+		configMapNameLabel:    provider.GetName(),
+		operatorManagedLabel:  "true",
+	}
 }
 
 // needToCompress checks whether the input data exceeds the maximum configmap

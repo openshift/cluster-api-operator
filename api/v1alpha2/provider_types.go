@@ -65,6 +65,32 @@ type ProviderSpec struct {
 	// namespace of the provider will be used. There is no validation of the yaml content inside the configmap.
 	// +optional
 	AdditionalManifestsRef *ConfigmapReference `json:"additionalManifests,omitempty"`
+
+	// ManifestPatches are applied to rendered provider manifests to customize the
+	// provider manifests. Patches are applied in the order they are specified.
+	// The `kind` field must match the target object, and
+	// if `apiVersion` is specified it will only be applied to matching objects.
+	// This should be an inline yaml blob-string https://datatracker.ietf.org/doc/html/rfc7396
+	// +optional
+	ManifestPatches []string `json:"manifestPatches,omitempty"`
+
+	// AdditionalDeployments is a map of additional deployments that the provider
+	// should manage. The key is the name of the deployment and the value is the
+	// DeploymentSpec.
+	// +optional
+	AdditionalDeployments map[string]AdditionalDeployments `json:"additionalDeployments,omitempty"`
+}
+
+// AdditionalDeployments defines the properties that can be enabled on the controller
+// manager and deployment for the provider if the provider is managing additional deployments.
+type AdditionalDeployments struct {
+	// Manager defines the properties that can be enabled on the controller manager for the additional provider deployment.
+	// +optional
+	Manager *ManagerSpec `json:"manager,omitempty"`
+
+	// Deployment defines the properties that can be enabled on the deployment for the additional provider deployment.
+	// +optional
+	Deployment *DeploymentSpec `json:"deployment,omitempty"`
 }
 
 // ConfigmapReference contains enough information to locate the configmap.
@@ -140,7 +166,7 @@ type DeploymentSpec struct {
 
 	// List of containers specified in the Deployment
 	// +optional
-	Containers []ContainerSpec `json:"containers"`
+	Containers []ContainerSpec `json:"containers,omitempty"`
 
 	// If specified, the pod's service account
 	// +optional

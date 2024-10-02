@@ -28,9 +28,10 @@ var (
 )
 
 const (
-	operatorNamespace = "capi-operator-system"
+	operatorNamespace   = "capi-operator-system"
+	capiSystemNamespace = "capi-system"
 
-	previousCAPIVersion = "v1.4.2"
+	previousCAPIVersion = "v1.5.4"
 
 	coreProviderName           = "cluster-api"
 	coreProviderDeploymentName = "capi-controller-manager"
@@ -46,6 +47,10 @@ const (
 
 	addonProviderName           = "helm"
 	addonProviderDeploymentName = "caaph-controller-manager"
+
+	ipamProviderName           = "in-cluster"
+	ipamProviderURL            = "https://github.com/kubernetes-sigs/cluster-api-ipam-provider-in-cluster/releases/latest/ipam-components.yaml"
+	ipamProviderDeploymentName = "caip-in-cluster-controller-manager"
 
 	customManifestsFolder = "resources/"
 )
