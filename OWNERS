@@ -4,26 +4,24 @@
 approvers:
 - JoelSpeed
 - RadekManak
+- chrischdi
 - damdo
-- nrb
 - jnpacker
-- serngawy
 - marek-veber
-- mzazrivec
-- PanSpagetka
+- mdbooth
+- nrb
+- serngawy
+- theobarberbany
 reviewers:
-- JoelSpeed
 - RadekManak
+- chrischdi
 - damdo
-- elmiko
-- nrb
 - jnpacker
-- serngawy
 - marek-veber
-- mzazrivec
+- mdbooth
+- nrb
 - racheljpg
-- PanSpagetka
-- sub-mod
+- serngawy
 - theobarberbany
 component: Cloud Compute
 subcomponent: Cluster API Providers
